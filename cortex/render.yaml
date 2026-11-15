@@ -1,5 +1,10 @@
 # Render Blueprint for Cortex AI Back-Office
 # Deploy: https://dashboard.render.com/blueprints
+# 
+# This blueprint deploys:
+# 1. cortex-api  - Express API + SSE + Baileys WhatsApp + Background Schedulers
+# 2. cortex-web  - React + Vite static frontend (Command Center)
+# 3. cortex-db   - PostgreSQL (optional, PGlite on disk is default)
 
 services:
   # Main API Server - Express + SSE + Baileys WhatsApp + Schedulers
@@ -23,6 +28,7 @@ services:
         value: production
       - key: PORT
         value: "3200"
+      # Sarvam AI (Indic LLM + Voice) — required for Hindi/Hinglish TTS/STT
       - key: SARVAM_API_KEY
         sync: false
       - key: SARVAM_LLM_MODEL
@@ -31,17 +37,31 @@ services:
         value: hi-IN
       - key: SARVAM_DEFAULT_SPEAKER
         value: meera
+      # WhatsApp Cloud API (Meta Business) — optional; Baileys is primary for demo
       - key: WHATSAPP_ACCESS_TOKEN
         sync: false
       - key: WHATSAPP_PHONE_NUMBER_ID
         sync: false
       - key: WHATSAPP_VERIFY_TOKEN
         value: cortex-verify
+      # Telegram Bot — optional; simulator used if not set
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+      # Demo recipients for decision cards (owner's WhatsApp/Telegram ID)
+      - key: DEMO_WHATSAPP_RECIPIENT
+        sync: false
+      - key: DEMO_TELEGRAM_RECIPIENT
+        sync: false
+      # LLM Provider selection
       - key: LLM_PROVIDER
         value: sarvam
-    # Persistent disk for PGlite database + WhatsApp session
+      # Baileys auth directory (persisted on disk)
+      - key: WHATSAPP_AUTH_DIR
+        value: /app/cortex/data/.baileys-auth
+      # Store ID for single-store demo mode
+      - key: DEMO_STORE_ID
+        value: store-ramesh
+    # Persistent disk for PGlite database + WhatsApp Baileys session
     disk:
       name: cortex-data
       mountPath: /app/cortex/data
@@ -70,10 +90,32 @@ services:
         name: Cache-Control
         value: no-cache, no-store, must-revalidate
 
-# Optional: PostgreSQL database (if you prefer over PGlite)
+  # Optional: PostgreSQL database (uncomment if you prefer managed PG over PGlite)
+  # - type: pserv
+  #   name: cortex-db
+  #   plan: free
+  #   region: singapore
+  #   envVars:
+  #     - key: DATABASE_URL
+  #       fromDatabase:
+  #         name: cortex-db
+  #         property: connectionString
+
+# Optional: Managed PostgreSQL (alternative to PGlite on disk)
 # databases:
 #   - name: cortex-db
 #     databaseName: cortex
 #     user: cortex
 #     plan: free
 #     region: singapore
+
+# Deploy notes:
+# 1. Set SARVAM_API_KEY in Render dashboard for voice/TTS to work
+# 2. Set WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID for Meta Cloud API (optional)
+# 3. Set TELEGRAM_BOT_TOKEN for Telegram bot (optional)
+# 4. Set DEMO_WHATSAPP_RECIPIENT to your WhatsApp number (with country code, e.g., 919876543210)
+#    to receive decision cards in the live WhatsApp self-chat
+# 5. The demo auto-seeds on first boot via seedDemoStore()
+# 6. PGlite database persists on the 'cortex-data' disk across deploys
+# 7. Baileys WhatsApp auth also persists on the same disk (survives restarts)
+# 8. Health check at /api/cortex/workforce ensures the API is ready

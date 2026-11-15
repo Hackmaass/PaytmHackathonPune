@@ -430,7 +430,7 @@ export async function seedDemoStore(db: CortexDb, storeId = DEMO_STORE_ID): Prom
     days: 30,
   });
   await db.insert(schema.sales).values(
-    buckets.map((b) => ({
+    buckets.map((b: { hourBucket: Date; qty: number; amount: number }) => ({
       id: id("sale"),
       storeId,
       sku: "MIXED",
