@@ -90,24 +90,19 @@ services:
         name: Cache-Control
         value: no-cache, no-store, must-revalidate
 
-  # Optional: PostgreSQL database (uncomment if you prefer managed PG over PGlite)
-  # - type: pserv
-  #   name: cortex-db
-  #   plan: free
-  #   region: singapore
-  #   envVars:
-  #     - key: DATABASE_URL
-  #       fromDatabase:
-  #         name: cortex-db
-  #         property: connectionString
-
 # Optional: Managed PostgreSQL (alternative to PGlite on disk)
+# Uncomment the below to use managed Postgres instead of PGlite on disk
 # databases:
 #   - name: cortex-db
 #     databaseName: cortex
 #     user: cortex
 #     plan: free
 #     region: singapore
+#     # If using managed PG, also add this env var to cortex-api service:
+#     # - key: DATABASE_URL
+#     #   fromDatabase:
+#     #     name: cortex-db
+#     #     property: connectionString
 
 # Deploy notes:
 # 1. Set SARVAM_API_KEY in Render dashboard for voice/TTS to work
@@ -119,3 +114,5 @@ services:
 # 6. PGlite database persists on the 'cortex-data' disk across deploys
 # 7. Baileys WhatsApp auth also persists on the same disk (survives restarts)
 # 8. Health check at /api/cortex/workforce ensures the API is ready
+# 9. To use managed PostgreSQL instead of PGlite: uncomment the 'databases:' section above
+#    and add DATABASE_URL env var to cortex-api service (see commented example)
