@@ -7,9 +7,9 @@
 
 ## 1. System Vision & Hackathon Alignment
 
-### Problem Statement — Track 3: Bharat Business (AI for MSMEs & Workers)
-> *"Build AI that helps India's businesses and workforce do more with less."*
-> Ideas: AI employees, WhatsApp business agents, accounting, sales, procurement, customer support, operations, and compliance.
+### Problem Statement — Track 1: Merchant Growth AI
+> *"Build AI that drives merchant growth, revenue recovery, customer retention, and operational efficiency."*
+> Ideas: AI employees, WhatsApp business agents, sales win-back, dynamic pricing/vouchers, khata acceleration, procurement negotiation, and compliance.
 
 ### Positioning
 **Cortex is an AI back-office for every Bharat MSME, run from WhatsApp.** A counter laptop (or a small cloud VM) runs a hired team of AI employees. The owner, their staff, suppliers and customers interact only through **WhatsApp / Telegram** and the **Paytm Soundbox** — zero new apps to install. "Do more with less" is measured in **₹ recovered, hours saved, and compliance deadlines never missed.**

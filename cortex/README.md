@@ -1,6 +1,6 @@
 # Cortex ⚡ — The Autonomous AI Back-Office for Bharat MSMEs
 
-> **Paytm Hackathon 2026 — Track 3: Bharat Business (AI for MSMEs & Workers)**  
+> **Paytm Hackathon 2026 — Track 1: Merchant Growth AI**  
 > *Turn any counter laptop and Paytm Soundbox into a proactive team of 5 AI employees that sweet shops, kiranas, and restaurants run entirely from WhatsApp.*
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue.svg?logo=typescript)](https://www.typescriptlang.org/)
@@ -277,7 +277,7 @@ Follow this script to experience the 5 hero agent workflows:
 
 ---
 
-## 🏆 Hackathon Alignment — Track 3: Bharat Business
+## 🏆 Hackathon Alignment — Track 1: Merchant Growth AI
 
 | Criteria | How Cortex Delivers |
 | :--- | :--- |

@@ -1,14 +1,14 @@
-# Track 3: Bharat Business — AI for MSMEs & Workers
+# Track 1: Merchant Growth AI
 # Cortex: The AI Back-Office for Every Bharat MSME, Run from WhatsApp
 *A standalone autonomous-workforce platform: an in-store desktop command center, a hired team of AI employees, a No-Code Agent Studio, and zero-install WhatsApp/Telegram remote control for owners, workers, suppliers and customers.*
 
 ---
 
-## 1. Executive Summary & Track 3 Mandate
+## 1. Executive Summary & Track 1 Mandate
 
 ### The Hackathon Problem Statement
-> *"Track 3 — Bharat Business: AI for MSMEs & Workers. Build AI that helps India's businesses and workforce do more with less.
-> Ideas: AI employees, WhatsApp business agents, accounting, sales, procurement, customer support, operations, and compliance."*
+> *"Track 1 — Merchant Growth AI: Build AI that drives merchant growth, revenue recovery, customer retention, and operational efficiency.
+> Ideas: AI employees, WhatsApp business agents, sales win-back, dynamic pricing/vouchers, khata acceleration, procurement negotiation, and compliance."*
 
 ### The Reality of a Bharat MSME
 A typical sweet shop, kirana or restaurant owner is simultaneously the salesperson, accountant, purchase manager, HR department, customer-support desk and compliance officer. They run it all from a notebook, a phone and memory:
@@ -403,7 +403,7 @@ SLIDE 1: TITLE
 ========================================================================================
 Headline:  Cortex — The AI Back-Office for Every Bharat MSME
 Subtitle:  Hire AI employees for sales, accounts, purchase, staff & support — run from WhatsApp
-Track:     Track 3: Bharat Business — AI for MSMEs & Workers
+Track:     Track 1: Merchant Growth AI
 Team Name: [Your Team Name]
 Visual:    Laptop running Cortex + phone showing WhatsApp approval card + Soundbox
 

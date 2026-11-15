@@ -1,5 +1,5 @@
 # Cortex — The AI Back-Office for Bharat MSMEs
-## Track 3: Bharat Business (AI for MSMEs & Workers) — Hackathon Pitch Deck & Executive Writeup
+## Track 1: Merchant Growth AI — Hackathon Pitch Deck & Executive Writeup
 
 ---
 
