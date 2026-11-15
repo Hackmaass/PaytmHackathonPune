@@ -1,6 +1,6 @@
 # Render Blueprint for Cortex AI Back-Office
 # Deploy: https://dashboard.render.com/blueprints
-# 
+#
 # This blueprint deploys:
 # 1. cortex-api  - Express API + SSE + Baileys WhatsApp + Background Schedulers
 # 2. cortex-web  - React + Vite static frontend (Command Center)
