@@ -119,11 +119,13 @@ Cortex respects merchant privacy:
 - Powered by **PGlite** (embedded Postgres running in-process via WebAssembly). No Docker, no external Postgres service, zero cloud hosting bill.
 - Offline and local LLM fallback: seamlessly connects to local **Ollama** (`qwen2.5:7b-instruct`) with built-in heuristic fallbacks if offline.
 
-### 4. Hardware Synergy with Paytm Soundbox
-Cortex turns the Soundbox from a passive payment buzzer into an interactive shop assistant:
-- Immediate voice confirmations upon 1-tap approvals: *"Paytm par 28 regular customers ko recovery offer bhej diya gaya hai!"*
-- Instant edge dispute reconciliation overrides during network lags.
-- Morning audio briefing upon store opening.
+### 4. Hardware Synergy with Paytm Soundbox & Sarvam AI Voice Engine
+Cortex turns the Soundbox from a passive payment buzzer into an interactive Indic shop assistant using **Sarvam AI** (`bulbul:v1` TTS & `saaras:v1` STT):
+- **Authentic Indic Speech (Sarvam Bulbul)**: Immediate voice announcements in natural Hindi/Hinglish upon 1-tap approvals: *"Paytm par 28 regular customers ko recovery offer bhej diya gaya hai!"*
+- **Instant Edge Dispute Override (Aman)**: Spoken confirmation for edge overrides: *"Paytm par teen sau pachaas rupaye prapt huye"*.
+- **Inbound WhatsApp Voice Notes (Sarvam Saaras STT)**: The merchant or staff can speak Hindi voice notes on WhatsApp (*"Check ₹350 payment"*, *"Haazir"*), automatically transcribed and routed to the right agent.
+- **Audio Payslips for Workers (Meera)**: Dispatches clear Hindi voice payslips directly to workers' WhatsApp.
+- **Offline Fallback**: Automatically degrades to local Windows SAPI OS TTS if offline or if API keys are unset.
 
 ---
 

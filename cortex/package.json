@@ -11,7 +11,8 @@
     "dev:server": "pnpm --filter @cortex/server dev",
     "dev:web": "pnpm --filter @cortex/web dev",
     "seed": "tsx scripts/seed-demo.ts",
-    "verify": "tsx scripts/verify-api.ts"
+    "verify": "tsx scripts/verify-api.ts",
+    "test:voice": "tsx scripts/test-voice.ts"
   },
   "dependencies": {
     "@cortex/db": "workspace:*",

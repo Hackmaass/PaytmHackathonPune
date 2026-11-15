@@ -10,7 +10,7 @@ import {
   makeId,
 } from "@cortex/runtime";
 import { paytmPgMock } from "@cortex/connectors";
-import { getActiveWhatsAppChannel } from "@cortex/channels";
+import { getActiveWhatsAppChannel, getVoiceProvider } from "@cortex/channels";
 import { numberToHindiWords } from "./hindi-numbers.js";
 
 export const AGENT_ID = "aman-support";
@@ -71,15 +71,19 @@ export async function checkPayment(db: CortexDb, storeId: string, amount: number
         type: "SOUNDBOX_ANNOUNCED",
         severity: "WARNING",
       });
+      const announcement = `Paytm par ${numberToHindiWords(amount)} rupaye prapt huye!`;
       await appendActivityEvent(db, {
         storeId,
         agentId: AGENT_ID,
         agentName: "Soundbox",
         agentAvatar: "🔊",
-        message: `Paytm par ${numberToHindiWords(amount)} rupaye prapt huye!`,
+        message: announcement,
         type: "SOUNDBOX_ANNOUNCED",
         severity: "SUCCESS",
       });
+
+      // Speak aloud in background via physical speaker / Bluetooth link if available
+      void getVoiceProvider().speak(announcement).catch(() => {});
 
       await db.insert(schema.disputeResolutions).values({
         id: makeId("disp"),

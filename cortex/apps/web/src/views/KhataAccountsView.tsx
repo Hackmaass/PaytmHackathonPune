@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePolling } from "../hooks/usePolling.js";
 import { api } from "../api.js";
+import { soundboxAudio } from "../services/soundboxAudio.js";
 
 const STATUS_COLOR: Record<string, string> = { REMINDER_DRAFTED: "amber", REMINDED: "blue", PAID: "green" };
 
@@ -9,12 +10,30 @@ export function KhataAccountsView() {
   const recon = usePolling(() => api.getReconciliation(), 5000);
   const compliance = usePolling(api.getComplianceCalendar, 15000);
   const [showAdd, setShowAdd] = useState(false);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+
+  function openWhatsAppReminder(name: string, phone: string, balance: number) {
+    const cleanPhone = phone.replace(/[^0-9]/g, "");
+    const msg = encodeURIComponent(
+      `Namaste ${name} ji! Umeed hai aap kushal mangal hain. Ramesh Sweets par aapka ₹${balance.toLocaleString("en-IN")} ka balance baaki hai. Suvidha ke liye Paytm UPI dwara bhugtan karein: paytm.me/ramesh-sweets 🙏`,
+    );
+    window.open(`https://wa.me/${cleanPhone}?text=${msg}`, "_blank");
+    setActionNotice(`WhatsApp draft opened for ${name} (₹${balance}).`);
+    soundboxAudio.queueAnnouncement(`Munim: ${name} ji ko udhaar reminder WhatsApp bhej diya gaya hai.`);
+    setTimeout(() => setActionNotice(null), 4000);
+  }
 
   return (
     <div className="view">
       <div className="view-header">
         <h2>📒 Khata & Accounts</h2>
       </div>
+
+      {actionNotice && (
+        <div className="banner success" style={{ marginBottom: 12 }}>
+          {actionNotice}
+        </div>
+      )}
 
       <div className="split-60-40">
         <section className="card">
@@ -25,7 +44,9 @@ export function KhataAccountsView() {
             </button>
           </div>
           {showAdd && <AddEntryForm onDone={() => { setShowAdd(false); void khata.refresh(); }} />}
-          <div className="overflow-x">
+          
+          {/* Desktop Table View */}
+          <div className="overflow-x desktop-only-table">
             <table className="data-table">
               <thead>
                 <tr>
@@ -34,29 +55,66 @@ export function KhataAccountsView() {
                   <th>Balance</th>
                   <th>Oldest Due</th>
                   <th>Status</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody>
                 {khata.data?.entries.map((e) => (
                   <tr key={e.customer_id} className={e.balance > 5000 && e.oldest_due_days > 15 ? "highlight" : ""}>
-                    <td>{e.name}</td>
+                    <td><strong>{e.name}</strong></td>
                     <td>{e.phone}</td>
                     <td>₹{e.balance.toLocaleString("en-IN")}</td>
                     <td>{e.oldest_due_days}d</td>
                     <td>
                       <span className={`pill ${STATUS_COLOR[e.status] ?? "slate"}`}>{e.status.replace(/_/g, " ")}</span>
                     </td>
+                    <td>
+                      <button
+                        className="btn btn-sm secondary"
+                        onClick={() => openWhatsAppReminder(e.name, e.phone, e.balance)}
+                        title="Send polite Hindi reminder via WhatsApp"
+                      >
+                        💬 WhatsApp
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {khata.data?.entries.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="empty-state">
+                    <td colSpan={6} className="empty-state">
                       No outstanding khata entries.
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
+          </div>
+
+          {/* Mobile Card List View */}
+          <div className="mobile-khata-cards">
+            {khata.data?.entries.map((e) => (
+              <div key={e.customer_id} className={`m-khata-card ${e.balance > 5000 && e.oldest_due_days > 15 ? "overdue-highlight" : ""}`}>
+                <div className="m-khata-row">
+                  <div>
+                    <div className="m-khata-name">{e.name}</div>
+                    <div className="m-khata-phone">{e.phone}</div>
+                  </div>
+                  <div className="m-khata-balance">₹{e.balance.toLocaleString("en-IN")}</div>
+                </div>
+                <div className="m-khata-row" style={{ marginTop: 8 }}>
+                  <div className="m-khata-meta">
+                    <span className="pill slate">{e.oldest_due_days} days due</span>
+                    <span className={`pill ${STATUS_COLOR[e.status] ?? "slate"}`}>{e.status.replace(/_/g, " ")}</span>
+                  </div>
+                  <button
+                    className="btn btn-sm primary"
+                    onClick={() => openWhatsAppReminder(e.name, e.phone, e.balance)}
+                  >
+                    💬 Send WhatsApp
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </section>
 

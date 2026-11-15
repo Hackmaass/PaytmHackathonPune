@@ -1,7 +1,19 @@
+import { useState, useEffect } from "react";
 import type { Store } from "@cortex/shared";
+import { soundboxAudio, type SoundboxAudioState } from "../services/soundboxAudio.js";
 
-export function StoreHeader(props: { store?: Store; live: boolean }) {
+export function StoreHeader(props: {
+  store?: Store;
+  live: boolean;
+  onOpenSoundbox?: () => void;
+}) {
   const { store } = props;
+  const [audioState, setAudioState] = useState<SoundboxAudioState>(soundboxAudio.getState());
+
+  useEffect(() => {
+    return soundboxAudio.subscribe(setAudioState);
+  }, []);
+
   return (
     <header className="store-header">
       <div className="store-header__left">
@@ -12,10 +24,27 @@ export function StoreHeader(props: { store?: Store; live: boolean }) {
       <div className="store-header__right">
         {store && (
           <>
-            <span className="status-chip">
-              🔊 Soundbox: {store.soundbox.status === "ONLINE" ? "Active" : store.soundbox.status} ({store.soundbox.battery}%🔋)
-              {store.soundbox.edge_override && <span className="status-dot" title="Edge override enabled" />}
-            </span>
+            {/* Interactive Soundbox Audio Status Chip */}
+            <button
+              className={`status-chip soundbox-chip-clickable ${audioState.isPlaying ? "speaking" : ""} ${audioState.muted ? "muted" : ""}`}
+              onClick={() => {
+                if (!audioState.unlocked) {
+                  void soundboxAudio.unlock();
+                } else if (props.onOpenSoundbox) {
+                  props.onOpenSoundbox();
+                } else {
+                  soundboxAudio.toggleMute();
+                }
+              }}
+              title="Click to open Soundbox controller or unmute"
+            >
+              <span className="audio-icon">{audioState.muted ? "🔇" : "🔊"}</span>
+              <span>
+                Soundbox: {audioState.muted ? "Muted" : audioState.isPlaying ? "Speaking…" : "Active"} ({store.soundbox.battery}%🔋)
+              </span>
+              <span className={`status-dot ${audioState.isPlaying ? "pulsing-green" : "active"}`} />
+            </button>
+
             <ChannelChip label="WhatsApp" status={store.channels.whatsapp} icon="🟢" />
             <ChannelChip label="Telegram" status={store.channels.telegram} icon="✈️" />
           </>

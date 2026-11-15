@@ -2,6 +2,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   DisconnectReason,
+  downloadMediaMessage,
   type WASocket,
   type WAMessage,
   type proto,
@@ -10,6 +11,7 @@ import pino from "pino";
 import QRCode from "qrcode";
 import type { IdentityRole } from "@cortex/shared";
 import type { ChannelAdapter, InboundEvent, OutboundCard, OutboundText, OutboundVoiceNote } from "./adapter.js";
+import { getVoiceProvider, type IndicVoiceProvider } from "./voice.js";
 
 export type WhatsAppLinkStatus = "DISCONNECTED" | "QR_PENDING" | "CONNECTED";
 
@@ -207,7 +209,32 @@ export class BaileysWhatsAppChannel implements ChannelAdapter {
       }
     }
 
-    const text = this.extractText(msg.message);
+    let text = this.extractText(msg.message);
+
+    // Audio message handling (WhatsApp voice notes & audio clips)
+    const audioMsg = msg.message.audioMessage;
+    if (!text && audioMsg) {
+      try {
+        console.log(`[whatsapp inbound] Detected voice note from ${jid}, downloading for Sarvam STT transcription...`);
+        const audioBuffer = (await downloadMediaMessage(
+          msg,
+          "buffer",
+          {},
+          { logger: pino({ level: "silent" }) as any, reuploadRequest: this.sock!.updateMediaMessage },
+        )) as Buffer;
+
+        const voice = getVoiceProvider();
+        if ("transcribe" in voice) {
+          text = await (voice as IndicVoiceProvider).transcribe(audioBuffer, audioMsg.mimetype || "audio/ogg");
+          console.log(`[whatsapp voice note] Transcribed via Sarvam Saaras: "${text}"`);
+        } else {
+          console.warn("[whatsapp voice note] Received audio note, but Sarvam is not configured to transcribe.");
+        }
+      } catch (err) {
+        console.error("[whatsapp voice note] Failed to download or transcribe audio note:", (err as Error).message);
+      }
+    }
+
     if (!text.trim()) return;
 
     // For self-chat, deliver replies to the user's phone JID so WhatsApp renders it in the self-chat
@@ -308,6 +335,34 @@ export class BaileysWhatsAppChannel implements ChannelAdapter {
     const sock = this.assertConnected();
     const target = this.jidFor(note.toIdentityId);
     console.log(`[whatsapp sendVoiceNote] Sending note to ${target}`);
+
+    const voice = getVoiceProvider();
+    if ("synthesize" in voice) {
+      try {
+        console.log(`[whatsapp sendVoiceNote] Synthesizing voice note using Sarvam Bulbul TTS: "${note.script}"`);
+        const audioBuffer = await (voice as IndicVoiceProvider).synthesize(note.script, {
+          speaker: "meera",
+          languageCode: "hi-IN",
+        });
+
+        const res = await sock.sendMessage(target, {
+          audio: audioBuffer,
+          mimetype: "audio/mp4",
+          ptt: true,
+        });
+
+        if (res?.key?.id) {
+          this.botSentMessageIds.add(res.key.id);
+        }
+
+        // Also send text transcript so the merchant or staff can read it in noisy environments
+        await sock.sendMessage(target, { text: `🔊 *Voice Payslip / Note:*\n"${note.script}"` });
+        return;
+      } catch (err) {
+        console.error("[whatsapp sendVoiceNote] Sarvam audio synthesis failed, falling back to text:", (err as Error).message);
+      }
+    }
+
     const res = await sock.sendMessage(target, { text: `🔊 ${note.script}` });
     if (res?.key?.id) {
       this.botSentMessageIds.add(res.key.id);

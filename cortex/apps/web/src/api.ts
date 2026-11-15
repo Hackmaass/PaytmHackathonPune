@@ -75,4 +75,19 @@ export const api = {
   resetDemo: () => post<{ success: true; store_id: string; reset_at: string }>("/api/demo/reset", {}),
 
   getWhatsAppStatus: () => get<{ status: "DISCONNECTED" | "QR_PENDING" | "CONNECTED"; qr?: string }>("/api/channels/whatsapp/status"),
+
+  getVoiceStatus: () =>
+    get<{
+      provider: "SARVAM" | "OS_TTS";
+      configured: boolean;
+      default_language: string;
+      default_speaker: string;
+      speakers: Array<{ id: string; gender: string; persona: string }>;
+    }>("/api/channels/voice/status"),
+
+  testVoiceSpeak: (text: string) =>
+    post<{ success: boolean; provider: string; spoken_text: string }>("/api/channels/voice/speak", { text }),
+
+  sendVoiceQuery: (text: string) =>
+    post<{ success: boolean; query: string; routed_to?: string; reply_text?: string }>("/api/cortex/voice-query", { text }),
 };

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { CortexDb } from "@cortex/db";
 import { DEMO_STORE_ID } from "@cortex/db";
-import { activityBus, decideDecision, getActivitySnapshot } from "@cortex/runtime";
+import { activityBus, decideDecision, getActivitySnapshot, dispatchInboundText } from "@cortex/runtime";
 import { getWorkforce } from "@cortex/runtime";
 import { AGENT_RUNNERS, studio } from "@cortex/agents";
 import { getWhatsAppLinkStatus } from "@cortex/channels";
@@ -87,6 +87,32 @@ export function cortexRouter(db: CortexDb): Router {
         return res.status(404).json({ error: "AGENT_NOT_FOUND" });
       }
       throw err;
+    }
+  });
+
+  router.post("/voice-query", async (req, res) => {
+    const text = String(req.body.text || "").trim();
+    if (!text) {
+      return res.status(400).json({ error: "Missing 'text' in voice query" });
+    }
+    try {
+      const outcome = await dispatchInboundText({
+        db,
+        storeId,
+        role: "OWNER",
+        identityId: "owner-counter-phone",
+        text,
+        senderName: "Merchant (Counter Phone)",
+      });
+      res.json({
+        success: true,
+        query: text,
+        routed_to: outcome.routedTo ?? "cortex-orchestrator",
+        reply_text: outcome.replyText,
+      });
+    } catch (err) {
+      console.error("[voice-query] dispatch failed:", err);
+      res.status(500).json({ success: false, error: (err as Error).message });
     }
   });
 

@@ -1,12 +1,40 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { Store } from "@cortex/shared";
 import { api } from "../api.js";
 import { usePolling } from "../hooks/usePolling.js";
+import { SoundboxWidget } from "../components/SoundboxWidget.js";
 
 export function ChannelsView(props: { store?: Store; onReset: () => void }) {
   const [resetting, setResetting] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [playingVoice, setPlayingVoice] = useState(false);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const [voiceStatus, setVoiceStatus] = useState<{
+    provider: "SARVAM" | "OS_TTS";
+    configured: boolean;
+    default_language: string;
+    default_speaker: string;
+    speakers: Array<{ id: string; gender: string; persona: string }>;
+  } | null>(null);
+
   const { data: waStatus } = usePolling(() => api.getWhatsAppStatus(), 3000);
+
+  useEffect(() => {
+    api.getVoiceStatus().then(setVoiceStatus).catch(() => {});
+  }, []);
+
+  async function testVoice(text = "Paytm par teen sau pachaas rupaye prapt huye"): Promise<void> {
+    setPlayingVoice(true);
+    setVoiceNotice(null);
+    try {
+      const res = await api.testVoiceSpeak(text);
+      setVoiceNotice(`🔊 Spoken aloud via ${res.provider === "SARVAM" ? "Sarvam Bulbul TTS" : "OS Windows SAPI"}!`);
+    } catch (err) {
+      setVoiceNotice(`❌ Voice test error: ${(err as Error).message}`);
+    } finally {
+      setPlayingVoice(false);
+    }
+  }
 
   async function resetDemo(): Promise<void> {
     setResetting(true);
@@ -21,6 +49,7 @@ export function ChannelsView(props: { store?: Store; onReset: () => void }) {
 
   const whatsappMode = waStatus?.status === "CONNECTED" ? "LIVE" : "SIMULATOR";
   const telegramMode = props.store?.channels.telegram === "SIMULATOR" ? "SIMULATOR" : "LIVE";
+  const soundboxMode = voiceStatus?.configured ? "SARVAM LIVE" : "OS TTS OFFLINE";
 
   return (
     <div className="view">
@@ -31,8 +60,38 @@ export function ChannelsView(props: { store?: Store; onReset: () => void }) {
       <div className="channels-grid">
         <ChannelCard title="🟢 WhatsApp" linked="+91 98765-XXXXX" mode={whatsappMode} />
         <ChannelCard title="✈️ Telegram" linked="@CortexStoreBot" mode={telegramMode} />
-        <ChannelCard title="🔊 Soundbox" linked={props.store ? `Battery ${props.store.soundbox.battery}%` : "—"} mode={props.store?.soundbox.status === "ONLINE" ? "LIVE" : "SIMULATOR"} />
+        <ChannelCard
+          title="🔊 Soundbox & Voice"
+          linked={voiceStatus?.configured ? "Sarvam Bulbul (hi-IN)" : "Windows SAPI (Offline)"}
+          mode={voiceStatus?.configured ? "LIVE" : "SIMULATOR"}
+        />
       </div>
+
+      <section className="card">
+        <div className="card-title">🔊 Paytm Soundbox & Sarvam Indic Voice Engine</div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 600 }}>Active Voice & LLM Engine</div>
+              <div style={{ fontSize: 13, color: "#64748B" }}>
+                {voiceStatus?.configured
+                  ? "Sarvam AI Sovereign Stack (Bulbul TTS, Saaras STT & Sarvam-105B LLM)"
+                  : "Local Offline Fallback (Windows SAPI TTS & Bharat Offline Engine)"}
+              </div>
+            </div>
+            <span className={`pill ${voiceStatus?.configured ? "green" : "amber"}`}>
+              {voiceStatus?.configured ? "SARVAM LIVE (Voice + LLM)" : "OFFLINE FALLBACK"}
+            </span>
+          </div>
+
+          <SoundboxWidget />
+
+          <div style={{ fontSize: 12, color: "#64748B", marginTop: 4 }}>
+            💡 To activate cloud Indic voice across Hindi, Marathi, Gujarati, Tamil, etc., add{" "}
+            <code>SARVAM_API_KEY=your_key</code> in <code>cortex/.env</code>.
+          </div>
+        </div>
+      </section>
 
       <section className="card">
         <div className="card-title">WhatsApp QR Onboarding</div>
