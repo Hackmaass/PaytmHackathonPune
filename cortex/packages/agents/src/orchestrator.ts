@@ -1,358 +1,527 @@
-import { eq, desc } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { CortexDb } from "@cortex/db";
 import { schema } from "@cortex/db";
+import type { DecisionKind } from "@cortex/shared";
 import {
   appendActivityEvent,
+  decideDecision,
   getLlmClient,
-  registerInboundTextHandler,
+  isLlmEnabled,
   timeLabel,
-  makeId,
-  isoDate,
   type InboundTextContext,
   type InboundTextOutcome,
+  type LlmMessage,
+  type TtsProvider,
 } from "@cortex/runtime";
-import { getActiveWhatsAppChannel, allowlistRecipient } from "@cortex/channels";
+import { getActiveWhatsAppChannel, allowlistRecipient, getVoiceProvider, SarvamVoiceProvider } from "@cortex/channels";
 import { checkPayment } from "./aman/index.js";
 import { run as runPriya } from "./priya/index.js";
 import { run as runMunim } from "./munim/index.js";
 import { run as runVikram } from "./vikram/index.js";
-import { run as runMeera } from "./meera/index.js";
+import { run as runMeera, checkIn as meeraCheckIn } from "./meera/index.js";
 import { compileSpec } from "./studio/index.js";
+import { appendTurn, lastAgentId, loadRecentTurns, toLlmHistory, type ChatTurn } from "./conversation.js";
+import {
+  AGENT_PROFILES,
+  agentHeading,
+  detectAddressedAgent,
+  handoffLine,
+  isChatAgent,
+  routeInboundMessage,
+  type ChatAgentId,
+  type RouteDecision,
+} from "./agent-registry.js";
+import { fallbackReply, loadStoreFacts, renderStoreContext, type StoreFacts } from "./store-context.js";
+
+type ResponderId = ChatAgentId | "cortex-orchestrator";
 
 /**
- * Intelligent Central Inbound Message Orchestrator
+ * WhatsApp conversation orchestrator.
  *
- * Handles messages arriving from WhatsApp (Self-chat or Atharva Chaskar).
- * 1. Shows message on Dashboard Live Task Stream immediately.
- * 2. Identifies the right agent & triggers the real business action.
- * 3. Formulates a crisp, contextual reply in English/Hindi/Hinglish.
- * 4. Sends the reply back to the WhatsApp sender.
- * 5. Logs the agent's action and reasoning on the Command Center in real-time.
+ * 1. Remembers the thread (chat_messages) so follow-ups stay in context.
+ * 2. Sarvam classifies the message: which AI employee owns it + what the
+ *    merchant wants (reply, run a routine, approve a pending decision…).
+ * 3. The employee the merchant is currently talking to announces a handoff
+ *    when the topic belongs to a colleague ("Yeh Munim ji ka kaam hai…").
+ * 4. The responsible employee answers with LIVE store data in the prompt —
+ *    real khata balances, stock cover, attendance, payroll, pending approvals.
+ * 5. The whole exchange is logged to the live stream so the Command Center
+ *    mirrors the chat.
  */
 export async function handleInboundMessage(ctx: InboundTextContext): Promise<InboundTextOutcome> {
+  const channel = (ctx.channel ?? "WHATSAPP") as "WHATSAPP" | "TELEGRAM";
   const digits = ctx.identityId.replace(/[^0-9]/g, "");
   if (digits) allowlistRecipient("WHATSAPP", digits);
 
   const senderName = ctx.senderName || (ctx.role === "OWNER" ? "Merchant (Owner)" : "Atharva Chaskar");
   const isAtharva = /atharva|chaskar/i.test(senderName) || /atharva|chaskar/i.test(ctx.identityId);
-  const greetingName = isAtharva ? "Atharva ji" : (ctx.role === "OWNER" ? "Ramesh ji" : senderName);
+  const ownerFirstName =
+    ctx.role === "OWNER" && senderName && !/merchant|owner/i.test(senderName)
+      ? senderName.trim().split(/\s+/)[0]!
+      : "Ramesh";
+  const greetingName = isAtharva ? "Atharva ji" : ctx.role === "OWNER" ? `${ownerFirstName} ji` : senderName;
 
-  // 1. Immediately log inbound text to Dashboard Live Task Stream
+  const rawText = ctx.text.trim();
+
+  // 1. Mirror the inbound message on the Command Center stream.
   await appendActivityEvent(ctx.db, {
     storeId: ctx.storeId,
     agentId: "cortex-orchestrator",
     agentName: "Cortex Assistant",
     agentAvatar: "📲",
-    message: `[WhatsApp from ${senderName}]: "${ctx.text}"`,
+    message: `[${channel === "WHATSAPP" ? "WhatsApp" : "Telegram"} from ${senderName}]: "${rawText}"`,
     type: "ACTION_EXECUTED",
     severity: "INFO",
   });
 
-  const rawText = ctx.text.trim();
-  const lower = rawText.toLowerCase();
+  // 2. Thread memory + live store facts (both fail soft).
+  const turns = await loadRecentTurns(ctx.db, ctx.storeId, channel, ctx.identityId);
+  const facts = await loadStoreFacts(ctx.db, ctx.storeId);
 
-  // --- A. GREETINGS & CAPABILITY MENU ---
-  if (/^(hi|hello|namaste|hey|help|kya kar sakte ho|options|menu)[\s\.,!]*$/i.test(lower)) {
-    const reply = `Namaste ${greetingName}! 🙏 Welcome to Cortex Back-Office for Ramesh Sweets.
-
-Here is what your AI workforce can do right now:
-• 🛡️ *Aman*: "Check ₹350 payment" or "Dispute queue"
-• 📒 *Munim*: "Who owes money?" or "Send khata reminders"
-• 📦 *Vikram*: "Stock status" or "Order paneer"
-• 🎯 *Priya*: "Sales report" or "Send vouchers"
-• 👷 *Meera*: "Staff attendance" or "Haazir"
-
-Just message your request in English or Hindi!`;
-
-    await sendReply(ctx, "Cortex Assistant", "🤖", reply);
+  // 3. Fast deterministic menu — no model round-trip for "hi"/"help".
+  if (/^(hi|hello|namaste|hey|help|kya kar sakte ho|options|menu)[\s\.,!]*$/i.test(rawText.toLowerCase())) {
+    const reply = greetingMenu(greetingName);
+    await sendReply(ctx, "cortex-orchestrator", reply);
+    await appendTurn(ctx.db, { storeId: ctx.storeId, channel, threadId: ctx.identityId, role: "USER", content: rawText });
+    await appendTurn(ctx.db, { storeId: ctx.storeId, channel, threadId: ctx.identityId, role: "AGENT", agentId: "cortex-orchestrator", agentName: "Cortex Assistant", content: reply });
     return { handled: true, routedTo: "cortex-orchestrator", replyText: reply };
   }
 
-  // --- B. AMAN: CUSTOMER SUPPORT & PAYMENT / UPI DISPUTES ---
-  if (/\b(aman|check|payment|paisa|upi|soundbox|rupaye|rs|transaction|dispute|kat gaya|refund)\b/i.test(lower) || /₹\s*\d+/.test(rawText)) {
-    const amountMatch = rawText.match(/(?:₹|rs\.?|inr)?\s*(\d+(?:\.\d+)?)/i);
-    const amount = amountMatch?.[1] ? Number(amountMatch[1]) : undefined;
+  // 4. Who is being addressed, and who was answering last?
+  const addressed = detectAddressedAgent(rawText);
+  const currentAgentId = lastAgentId(turns);
+  const route = await routeInboundMessage({ text: rawText, turns, addressed, currentAgentId: currentAgentId as ChatAgentId | undefined });
 
-    if (amount && amount >= 10) {
-      const res = await checkPayment(ctx.db, ctx.storeId, amount);
-      let reply = "";
-      if (res.status === "SUCCESS") {
-        reply = `🛡️ *Aman (Support & UPI Desk)*\n\n✅ *Payment Verified!*\n• Amount: *₹${amount}*\n• Status: *SUCCESS*\n• Paytm Txn ID: ${res.txnId ?? "TXN-9021-88"}\n• UTR: ${res.utr ?? "UTR-99120341"}\n• Soundbox: Edge override announced live at counter!\n\nNo customer dispute ticket needed.`;
-      } else if (res.status === "PENDING") {
-        reply = `🛡️ *Aman (Support & UPI Desk)*\n\n⚠️ *Payment In-Process (Bank Hold)*\n• Amount: *₹${amount}*\n• Ticket ID: *#${res.ticketId}*\n• Status: Reconciled with Bank PG (Awaiting bank settlement)\n• Customer Slip: WhatsApp receipt prepared.\n\nFunds will settle or auto-reverse within 2 hours.`;
-      } else {
-        reply = `🛡️ *Aman (Support & UPI Desk)*\n\n⚠️ *Transaction Not Found in last 5 min*\n• Amount: *₹${amount}*\n• Ticket ID: *#${res.ticketId}* opened for counter verification.`;
-      }
-      await sendReply(ctx, "Aman", "🛡️", reply);
-      return { handled: true, routedTo: "aman-support", replyText: reply };
-    }
+  // 5. Decide who answers. Topic wins over the addressee (that triggers the
+  //    handoff); greetings/small talk stay with the agent being spoken to.
+  const pending = facts.pendingDecisions[0];
+  const wantsApprove = route.intent === "approve_pending" || (Boolean(pending) && isAffirmative(rawText));
+  const wantsReject = route.intent === "reject_pending" || (Boolean(pending) && isNegative(rawText));
 
-    const fallback = `🛡️ *Aman (Support & UPI Desk)*\n\nNamaste ${greetingName}! Aman here. I monitor your Paytm Soundbox, counter payments, and UPI dispute holds in real-time.\n\n*Payment & Dispute Status:*\n• Past UPI Holds Cleared: 18 disputes resolved\n• Pending Disputes: 0 active disputes\n• Paytm Soundbox: ACTIVE (88% battery, edge override enabled)\n\nTo verify a counter payment, reply with the amount (e.g. *"Check ₹350"*).`;
+  let responder: ResponderId = route.agentId as ResponderId;
+  if (responder === "cortex-orchestrator" && addressed) responder = addressed;
+  if ((route.intent === "greeting" || route.confidence < 0.35) && addressed) responder = addressed;
 
-    const amanContext = `Store: Ramesh Sweets & Restaurant.
-Paytm Soundbox: Online (88% battery, edge override enabled).
-Dispute History: 18 past UPI holds auto-cleared, 0 pending disputes currently.
-Role: Real-time counter support. Reconciles payments within 5 minutes against Paytm PG mock. When network lag delays Soundbox voice announcement, Aman uses edge override to announce "Paytm par teen sau pachaas rupaye prapt huye" immediately so customers can leave.`;
-
-    const aiReply = await askAgentBrain(ctx, "Aman", "Customer Support & UPI Desk", amanContext, fallback);
-    const reply = aiReply.startsWith("🛡️") ? aiReply : `🛡️ *Aman (Support & UPI Desk)*\n\n${aiReply}`;
-
-    await sendReply(ctx, "Aman", "🛡️", reply);
-    return { handled: true, routedTo: "aman-support", replyText: reply };
+  if (wantsApprove || wantsReject) {
+    if (pending) responder = isChatAgent(pending.agentId) ? pending.agentId : "cortex-orchestrator";
+    else responder = (addressed ?? currentAgentId ?? "cortex-orchestrator") as ResponderId;
   }
 
-  // --- C. MUNIM: KHATA, UDHAAR, SETTLEMENTS & GST ---
-  if (/\b(munim|munimji|khata|udhaar|credit|due|baaki|settlement|mismatch|gst|gstr|tax|fssai|compliance|licence|license)\b/i.test(lower)) {
-    if (/send\s*reminder|remind|bhejo|udhaar mango/i.test(lower)) {
-      await runMunim(ctx.db, ctx.storeId);
-      const reply = `📒 *Munim (Accounts & Khata)*\n\nStaged Khata Reminders for 2 overdue debtors (>₹5,000 for 15+ days, total ₹14,000):\n• Gupta Caterers (₹8,400)\n• Verma Ji (₹5,600)\n\n• Check the decision card sent above, or reply "APPROVE" to send polite WhatsApp reminders with Paytm UPI payment links!`;
-      await sendReply(ctx, "Munim", "📒", reply);
-      return { handled: true, routedTo: "munim-accounts", replyText: reply };
-    }
+  const handoffFrom: ChatAgentId | undefined =
+    addressed && addressed !== responder
+      ? (addressed as ChatAgentId)
+      : !addressed && currentAgentId && currentAgentId !== responder
+        ? (currentAgentId as ChatAgentId)
+        : undefined;
 
-    const fallback = `📒 *Munim (Accounts & Khata Desk)*\n\nPranaam ${greetingName}! Munim at your service. I keep your books reconciled and recover pending udhaar.\n\n*Current Udhaar (Khata) Summary:*\n• Total Outstanding: *₹18,600* across 3 customers\n\n1. *Gupta Caterers*: ₹8,400 (22 days overdue)\n2. *Verma Ji*: ₹5,600 (17 days overdue)\n3. *Rana Tent House*: ₹4,600 (19 days overdue)\n\n• Mismatch Flagged: *₹620* short settlement from Bank PG\n• Compliance: *GSTR-1 (September)* due 2026-10-11 (Draft ready for CA)\n\n• Reply *"Send reminders"* to stage automated WhatsApp reminders with Paytm UPI payment links!`;
+  // 6. Run the deterministic business action (if any), then let the
+  //    responsible employee speak.
+  const action = await runIntent(ctx, {
+    route,
+    facts,
+    responder,
+    pending: pending ? { id: pending.id, kind: pending.kind as DecisionKind } : undefined,
+    wantsApprove,
+    wantsReject,
+    greetingName,
+    channel,
+  });
 
-    const munimContext = `Store: Ramesh Sweets & Restaurant.
-Khata / Credit Outstanding: Total ₹18,600 across 3 business customers:
-1. Gupta Caterers: ₹8,400 (22 days overdue)
-2. Verma Ji: ₹5,600 (17 days overdue)
-3. Rana Tent House: ₹4,600 (19 days overdue)
-Payment Policy: Automated polite Hindi reminders with Paytm UPI payment links for balances > ₹5,000 overdue > 15 days. Quiet hours enforced between 20:00 and 10:00.
-Settlement Reconciliation: POS sales ₹21,480, PG settled ₹20,860, Cash ₹3,200. Mismatch: ₹620 short settlement pending with Bank PG.
-Tax & Compliance: GSTR-1 for September is due on 2026-10-11 (Draft CSV/JSON ready for CA review). FSSAI license renewal due in 64 days (2026-11-30).`;
-
-    const aiReply = await askAgentBrain(ctx, "Munim", "Accounts, Khata & GST Desk", munimContext, fallback);
-    const reply = aiReply.startsWith("📒") ? aiReply : `📒 *Munim (Accounts & Khata Desk)*\n\n${aiReply}`;
-
-    await sendReply(ctx, "Munim", "📒", reply);
-    return { handled: true, routedTo: "munim-accounts", replyText: reply };
-  }
-
-  // --- D. VIKRAM: STOCK & PROCUREMENT ---
-  if (/\b(vikram|stock|inventory|paneer|khoya|ghee|samaan|maal|supplier|vendor|purchase order|po|reorder|quote|rate|shortage)\b/i.test(lower)) {
-    if (/order|reorder|buy|draft po|khareedo|manga/i.test(lower)) {
-      await runVikram(ctx.db, ctx.storeId);
-      const reply = `📦 *Vikram (Stock & Procurement)*\n\nDraft Purchase Order staged!\n• Supplier: Sharma Dairy (Cheapest of 3 quotes)\n• Item: Butter Paneer (12 kg × ₹310 = ₹3,720)\n• Price Variance Guardrail: +1.6% (PASSED)\n\n• Check the decision card sent above or reply "APPROVE" to send the PO to Sharma Dairy via WhatsApp!`;
-      await sendReply(ctx, "Vikram", "📦", reply);
-      return { handled: true, routedTo: "vikram-procurement", replyText: reply };
-    }
-
-    const fallback = `📦 *Vikram (Stock & Procurement)*\n\nNamaste ${greetingName}! Vikram here. I track counter inventory and negotiate supplier rates.\n\n*Current Stock Status:*\n⚠️ *Butter Paneer*: Only *11 kg remaining* (< 1 day cover, daily velocity 12 kg/day!)\n• *Ghee*: 2 tins remaining (daily velocity 40 tins)\n\n*Supplier Quotes for 12 kg Paneer:*\n1. *Sharma Dairy*: ₹310/kg (Best quote! Saves ₹15/kg vs Gupta Dairy)\n2. *Gupta Dairy*: ₹325/kg\n3. *Mother Dairy*: ₹335/kg\n\n• Reply *"Order paneer"* to draft a Purchase Order for 12 kg (₹3,720) with 1-tap merchant approval!`;
-
-    const vikramContext = `Store: Ramesh Sweets & Restaurant.
-Inventory Status:
-- Butter Paneer: 11 kg in stock. Daily consumption is 12 kg/day. Current cover is less than 1 day (< 24 hours). Reorder threshold is 15 kg. Stockout risk: CRITICAL.
-- Ghee: 2 tins in stock. Daily consumption is 40 tins/month.
-Supplier Quotes for Butter Paneer (12 kg order):
-1. Sharma Dairy: ₹310/kg (Total: ₹3,720) — Recommended (Cheapest, reliable, saves ₹15/kg vs Gupta).
-2. Gupta Dairy: ₹325/kg (Total: ₹3,900).
-3. Mother Dairy: ₹335/kg (Total: ₹4,020).
-Price Variance Guardrail: Previous purchase was ₹305/kg. Sharma Dairy's quote is +1.6% variance, well within our +8% ceiling. Guardrail PASSED.
-Procurement Cap: ₹10,000 max per PO. Proposed PO is ₹3,720 (PASSED).`;
-
-    const aiReply = await askAgentBrain(ctx, "Vikram", "Stock & Procurement Officer", vikramContext, fallback);
-    const reply = aiReply.startsWith("📦") ? aiReply : `📦 *Vikram (Stock & Procurement)*\n\n${aiReply}`;
-
-    await sendReply(ctx, "Vikram", "📦", reply);
-    return { handled: true, routedTo: "vikram-procurement", replyText: reply };
-  }
-
-  // --- E. PRIYA: SALES & WIN-BACK ---
-  if (/\b(priya|sale|sales|revenue|kamai|dip|deficit|discount|voucher|coupon|offer|customer|regular|report|win-?back)\b/i.test(lower)) {
-    if (/send\s*voucher|run\s*offer|campaign|bhejo offer/i.test(lower)) {
-      await runPriya(ctx.db, ctx.storeId);
-      const reply = `🎯 *Priya (Sales & Win-back)*\n\nStaged 10% Recovery Voucher for 28 regular customers.\n• Campaign Cost: ₹140 (WhatsApp spend)\n• Projected Revenue: ₹3,200\n• Margin Guardrail: 35% net margin ≥ 30% floor (PASSED)\n\n• Check the decision card sent above or reply "APPROVE" to dispatch vouchers!`;
-      await sendReply(ctx, "Priya", "🎯", reply);
-      return { handled: true, routedTo: "priya-sales", replyText: reply };
-    }
-
-    const fallback = `🎯 *Priya (Sales & Win-back)*\n\nNamaste ${greetingName}! Priya here. I monitor counter sales trends, footfall, and revenue dips.\n\n*Sales Diagnostic Report:*\n• Yesterday's Revenue: *₹18,420* (Projected: ₹23,200)\n• Evening Deficit (6-9 PM): *-₹4,800* (-38% dip due to evening Butter Paneer stockout)\n• Affected Regulars: *28 customers*\n• Recovered Revenue (This Week): *₹14,800*\n\nWould you like me to dispatch the *10% recovery voucher* to the 28 regulars?\n• Reply *"Send vouchers"* to approve campaign (₹140 WhatsApp cost, projected ₹3,200 recovery)!`;
-
-    const priyaContext = `Store: Ramesh Sweets & Restaurant.
-Sales Diagnostics:
-- Yesterday's Revenue: ₹18,420 (Projected target: ₹23,200).
-- Evening Deficit (6:00-9:00 PM): -₹4,800 (-38% dip).
-- Root Cause: Butter Paneer ran out of stock at 5:45 PM right before dinner rush.
-- Affected Regulars: 28 repeat customers left without completing their dinner order.
-- Recovery Strategy: 10% win-back recovery voucher sent over WhatsApp to the 28 regulars.
-- Financials: Cost is ₹140 (WhatsApp delivery fee). Projected recovery is ₹3,200.
-- Margin Guardrail: 45% gross margin - 10% discount = 35% net margin (exceeds 30% floor, PASSED).
-- Recovered Revenue this week: ₹14,800.`;
-
-    const aiReply = await askAgentBrain(ctx, "Priya", "Sales & Win-back Specialist", priyaContext, fallback);
-    const reply = aiReply.startsWith("🎯") ? aiReply : `🎯 *Priya (Sales & Win-back)*\n\n${aiReply}`;
-
-    await sendReply(ctx, "Priya", "🎯", reply);
-    return { handled: true, routedTo: "priya-sales", replyText: reply };
-  }
-
-  // --- F. MEERA: STAFF & ATTENDANCE ---
-  if (/\b(meera|haazir|present|absent|attendance|chutti|staff|worker|raju|sunita|imran|deepak|anita|advance|salary|tankhwah|payroll|payday)\b/i.test(lower)) {
-    if (/haazir|present|check\s*in/i.test(lower)) {
-      const time = timeLabel();
-      await appendActivityEvent(ctx.db, {
-        storeId: ctx.storeId,
-        agentId: "meera-staff",
-        agentName: "Meera",
-        agentAvatar: "👷",
-        message: `Attendance check-in recorded for ${greetingName} at ${time} IST via WhatsApp.`,
-        type: "ATTENDANCE_SUMMARY",
-        severity: "INFO",
-      });
-      const reply = `👷 *Meera (Staff Desk)*\n\n✅ Haaziri darj ho gayi hai! Check-in recorded for *${greetingName}* at ${time} IST.\nStatus: *PRESENT*.`;
-      await sendReply(ctx, "Meera", "👷", reply);
-      return { handled: true, routedTo: "meera-staff", replyText: reply };
-    }
-
-    if (/pay\s*salary|payroll|payday|payout/i.test(lower)) {
-      await runMeera(ctx.db, ctx.storeId);
-      const reply = `👷 *Meera (Staff Desk)*\n\nStaged Payday Payout for 6 staff members:\n• Net Salary Payout: ₹81,500 (Gross ₹86,000 − Advances ₹4,500)\n• Guardrail: Payout ceiling check PASSED\n\n• Check the decision card sent above or reply "APPROVE" to trigger 1-tap UPI payouts & voice payslips!`;
-      await sendReply(ctx, "Meera", "👷", reply);
-      return { handled: true, routedTo: "meera-staff", replyText: reply };
-    }
-
-    const fallback = `👷 *Meera (Staff & Payroll Desk)*\n\nNamaste ${greetingName}! Meera here. I manage staff WhatsApp check-ins, advances, and payroll.\n\n*Today's Attendance (5 / 6 Staff Present):*\n✅ Sunita (Cook) — 08:52 AM\n✅ Imran (Counter) — 09:12 AM (Late)\n✅ Priyanka (Helper) — 08:45 AM\n✅ Deepak (Cook) — 08:50 AM\n✅ Anita (Counter) — 08:55 AM\n❌ *Raju* (Helper) — *ABSENT* (No check-in by 9:00 AM)\n\n*Payroll & Advance Ledger:*\n• Net salary payable this month: ₹54,000 (across 6 workers)\n• Advances given: ₹3,500 (Raju ₹2,000, Sunita ₹1,500)\n• Payout Mode: 1-Tap UPI payout ready for payday.`;
-
-    const meeraContext = `Store: Ramesh Sweets & Restaurant.
-Staff Roster (6 staff):
-1. Sunita (Cook) - Present (08:52 AM)
-2. Imran (Counter) - Present (09:12 AM, late by 12 mins)
-3. Priyanka (Helper) - Present (08:45 AM)
-4. Deepak (Cook) - Present (08:50 AM)
-5. Anita (Counter) - Present (08:55 AM)
-6. Raju (Helper) - ABSENT (No WhatsApp check-in by 9:00 AM cut-off)
-Payroll Ledger:
-- Monthly net payroll payable on 1st: ₹81,500 across 6 staff.
-- Advances outstanding: Raju ₹2,000, Sunita ₹1,500 (total ₹3,500).
-- Payout Mode: 1-Tap UPI payout ready for merchant approval.`;
-
-    const aiReply = await askAgentBrain(ctx, "Meera", "Staff & Payroll Desk", meeraContext, fallback);
-    const reply = aiReply.startsWith("👷") ? aiReply : `👷 *Meera (Staff & Payroll Desk)*\n\n${aiReply}`;
-
-    await sendReply(ctx, "Meera", "👷", reply);
-    return { handled: true, routedTo: "meera-staff", replyText: reply };
-  }
-
-  // --- G. STUDIO: CREATE CUSTOM AGENT ---
-  if (/\b(create\s*agent|hire\s*agent|new\s*agent|automation|custom\s*agent)\b/i.test(lower)) {
-    const res = await compileSpec({ prompt: rawText, template_id: null });
-    let reply = "";
-    if (res.rejected) {
-      reply = `✨ *Studio Compiler*\n\n⚠️ ${res.reason}`;
-    } else {
-      reply = `✨ *No-Code Agent Studio*
-
-Custom Agent Compiled!
-• Name: *${res.spec.name}*
-• Role: ${res.spec.role}
-• Trigger: ${res.spec.trigger}
-• Status: STAGED for hire on Command Center.`;
-    }
-
-    await sendReply(ctx, "Studio Compiler", "✨", reply);
-    return { handled: true, routedTo: "studio", replyText: reply };
-  }
-
-  // --- H. INTELLIGENT AI FALLBACK VIA LLM ---
-  const system = [
-    `You are Cortex, the AI Back-Office Assistant for Ramesh Sweets & Restaurant on WhatsApp.`,
-    `You are speaking with ${senderName}.`,
-    `The shop runs 5 AI employees:`,
-    `- Priya (Sales & Win-back)`,
-    `- Aman (Customer Support, UPI Disputes & Soundbox)`,
-    `- Vikram (Stock & Procurement)`,
-    `- Munim (Khata, Accounts & GST)`,
-    `- Meera (Staff & Payroll Desk)`,
-    `Keep your reply brief, professional, polite, and in helpful Hinglish/English. Always advise which agent can take action.`,
-  ].join("\n");
-
-  try {
-    const { text: aiReply } = await getLlmClient().complete({
-      system,
-      prompt: rawText,
-      maxTokens: 250,
+  let reply = action?.reply;
+  if (!reply) {
+    reply = await composeAgentReply({
+      agentId: responder,
+      senderName,
+      text: rawText,
+      facts,
+      turns,
+      isVoiceMessage: !!ctx.audioBuffer,
     });
-    const finalReply = aiReply.startsWith("[offline-stub")
-      ? `Namaste ${greetingName}! Cortex Back-Office is active. You can ask Munim for khata balances, Vikram for stock levels, Aman to check UPI payments, Priya for sales reports, or Meera for staff attendance.`
-      : aiReply;
+    if (responder !== "cortex-orchestrator") {
+      const heading = agentHeading(responder);
+      if (!reply.startsWith(AGENT_PROFILES[responder].avatar) && !reply.startsWith(heading)) {
+        reply = `${heading}\n\n${reply}`;
+      }
+    }
+  }
 
-    await sendReply(ctx, "Cortex Assistant", "🤖", finalReply);
-    return { handled: true, routedTo: "cortex-orchestrator", replyText: finalReply };
-  } catch {
-    const fallback = `Namaste ${greetingName}! Cortex Back-Office received: "${rawText}". You can ask Munim for khata, Vikram for stock, Aman for payments, Priya for sales, or Meera for attendance.`;
-    await sendReply(ctx, "Cortex Assistant", "🤖", fallback);
-    return { handled: true, routedTo: "cortex-orchestrator", replyText: fallback };
+  const handoff = handoffFrom ? handoffLine(handoffFrom, responder) : undefined;
+  const finalReply = handoff ? `${handoff}\n\n${reply}` : reply;
+
+  // 7. Deliver, log the handoff, and persist both sides of the exchange.
+  await sendReply(ctx, responder, finalReply);
+
+  if (handoffFrom) {
+    const from = AGENT_PROFILES[handoffFrom];
+    const to = isChatAgent(responder) ? AGENT_PROFILES[responder] : undefined;
+    await appendActivityEvent(ctx.db, {
+      storeId: ctx.storeId,
+      agentId: handoffFrom,
+      agentName: from.name,
+      agentAvatar: from.avatar,
+      message: `${from.name} handed the chat to ${to?.name ?? "Cortex"}: ${route.reason ?? `merchant asked about ${to?.domain ?? "store operations"}`}.`,
+      type: "AGENT_HANDOFF",
+      severity: "INFO",
+    });
+  }
+
+  await appendTurn(ctx.db, { storeId: ctx.storeId, channel, threadId: ctx.identityId, role: "USER", content: rawText });
+  await appendTurn(ctx.db, {
+    storeId: ctx.storeId,
+    channel,
+    threadId: ctx.identityId,
+    role: "AGENT",
+    agentId: responder === "cortex-orchestrator" ? "cortex-orchestrator" : responder,
+    agentName: responder === "cortex-orchestrator" ? "Cortex Assistant" : AGENT_PROFILES[responder].name,
+    content: finalReply,
+  });
+
+  return { handled: true, routedTo: responder, replyText: finalReply };
+}
+
+const APPROVE_RE =
+  /^\s*(haan|ha+|yes|yep|ok(ay)?|theek|thik|sahi|bhejo|bhej\s*do|kardo|kar\s*do|approve|send|chalega|confirm|done)(\s+(ji|bhejo|kardo|kar\s*do|send|please|it)){0,2}[\s\.,!]*$/i;
+const REJECT_RE = /^\s*(nahi|nahin|na|no|nope|cancel|reject|mat\s*bhejo|band\s*karo|ruko)(\s+(ji|please)){0,2}[\s\.,!]*$/i;
+
+function isAffirmative(text: string): boolean {
+  return APPROVE_RE.test(text);
+}
+
+function isNegative(text: string): boolean {
+  return REJECT_RE.test(text);
+}
+
+function greetingMenu(name: string): string {
+  return `Namaste ${name}! 🙏 Cortex back-office is live.
+
+Talk to any AI employee, in English, Hindi or Hinglish:
+• 🛡️ *Aman* — "Check ₹350 payment" / "koi dispute?"
+• 📒 *Munim* — "Kitna udhaar baaki hai?" / "Send reminders"
+• 📦 *Vikram* — "Stock status" / "Order paneer"
+• 🎯 *Priya* — "Sales report" / "Send vouchers"
+• 👷 *Meera* — "Staff attendance" / "Haazir" / "Pay salary"
+
+You can also just ask normally — I'll route it to the right employee, and they'll hand off to a colleague if the question belongs to someone else.`;
+}
+
+interface IntentRun {
+  route: RouteDecision;
+  facts: StoreFacts;
+  responder: ResponderId;
+  pending?: { id: string; kind: DecisionKind };
+  wantsApprove: boolean;
+  wantsReject: boolean;
+  greetingName: string;
+  channel: "WHATSAPP" | "TELEGRAM";
+}
+
+interface IntentResult {
+  reply: string;
+}
+
+/**
+ * Deterministic layer: nothing here is decided by an LLM. Money-moving and
+ * state-changing intents go through the same agents/guardrails as the
+ * routines — the chat only triggers them.
+ */
+async function runIntent(ctx: InboundTextContext, args: IntentRun): Promise<IntentResult | undefined> {
+  const { route, facts, wantsApprove, wantsReject, greetingName, channel } = args;
+
+  if (wantsApprove || wantsReject) {
+    if (!args.pending) {
+      return {
+        reply: `🤖 *Cortex Assistant*\n\nAbhi koi pending approval nahi hai. Jaise hi Priya, Munim, Vikram ya Meera koi decision stage karenge, aap yahan se hi *"haan bhejo"* ya *"cancel"* bol sakte hain.`,
+      };
+    }
+    const outcome = await decideDecision(ctx.db, {
+      decisionId: args.pending.id,
+      storeId: ctx.storeId,
+      action: wantsApprove ? "APPROVE" : "REJECT",
+      source: channel,
+    });
+    return { reply: describeDecisionOutcome(args.pending.kind, args.pending.id, outcome) };
+  }
+
+  switch (route.intent) {
+    case "check_payment": {
+      const amount = route.amount;
+      if (!amount) {
+        return {
+          reply: `🛡️ *Aman (Support & UPI Disputes)*\n\nAmount bataiye — jaise *"Check ₹350"* — aur main Paytm PG ledger + Soundbox queue se turant verify kar dunga.`,
+        };
+      }
+      const res = await checkPayment(ctx.db, ctx.storeId, amount);
+      const lines = [`🛡️ *Aman (Support & UPI Disputes)*`, ""];
+      if (res.status === "SUCCESS") {
+        lines.push(
+          `✅ *Payment Verified — ₹${amount}*`,
+          `• Paytm Txn: ${res.txnId ?? "TXN-9021-88"}`,
+          `• UTR: ${res.utr ?? "UTR-99120341"}`,
+          `• Soundbox: edge override announced at the counter`,
+          "",
+          "Customer ko bhejne ke liye koi dispute slip ki zaroorat nahi hai.",
+        );
+      } else if (res.status === "PENDING") {
+        lines.push(
+          `⚠️ *Payment In-Process — ₹${amount}*`,
+          `• Ticket: *#${res.ticketId}*`,
+          `• Bank PG settlement pending (auto-clears within 2 hours)`,
+          `• Customer receipt drafted on WhatsApp`,
+        );
+      } else {
+        lines.push(
+          `⚠️ *No ₹${amount} payment in the last 5 minutes*`,
+          `• Ticket *#${res.ticketId}* opened for counter verification`,
+          `• Check the Soundbox queue; I'll re-check on request`,
+        );
+      }
+      return { reply: lines.join("\n") };
+    }
+
+    case "khata_reminders": {
+      await runMunim(ctx.db, ctx.storeId);
+      const overdue = facts.khata.accounts.filter((a) => a.balance > 5000 && a.dueDays > 15);
+      const list = (overdue.length ? overdue : facts.khata.accounts.slice(0, 3))
+        .map((a) => `• ${a.name} — ₹${Math.round(a.balance).toLocaleString("en-IN")} (${a.dueDays}d)`)
+        .join("\n");
+      return {
+        reply: `📒 *Munim (Accounts & Khata)*\n\nReminder batch staged with Paytm UPI links:\n${list || "• No overdue khata right now"}\n\n• Card aa raha hai — reply *"haan bhejo"* to approve, ya Command Center par 1-tap kijiye.\n• Quiet hours 20:00–10:00 respected.`,
+      };
+    }
+
+    case "create_po": {
+      await runVikram(ctx.db, ctx.storeId);
+      const low = facts.stock.filter((s) => s.coverDays < 1.5 || s.qtyOnHand <= s.reorderLevel).sort((a, b) => a.coverDays - b.coverDays)[0];
+      return {
+        reply: `📦 *Vikram (Stock & Procurement)*\n\nRFQ sent to 3 suppliers${low ? ` for *${low.sku}* (${low.qtyOnHand} ${low.unit} left, ~${low.coverDays}d cover)` : ""}.\nBest quote draft PO stage ho gaya hai.\n\n• Guardrail: PO ≤ ₹10,000 and ≤ last price +8%\n• Reply *"haan bhejo"* to place the order, or open the card to compare quotes.`,
+      };
+    }
+
+    case "send_vouchers": {
+      await runPriya(ctx.db, ctx.storeId);
+      return {
+        reply: `🎯 *Priya (Sales & Win-back)*\n\nWin-back campaign staged for your regulars.\n• Latest-day gap vs baseline: ₹${Math.round(facts.sales.deficit).toLocaleString("en-IN")}\n• Margin guardrail: 10% discount stays above the 30% floor\n• WhatsApp spend stays inside the daily cap\n\n• Reply *"haan bhejo"* to dispatch vouchers.`,
+      };
+    }
+
+    case "payroll": {
+      await runMeera(ctx.db, ctx.storeId);
+      return {
+        reply: `👷 *Meera (Staff & Payroll Desk)*\n\nPayday payout staged for ${facts.staff.length} staff:\n• Net payable: *₹${Math.round(facts.payrollNet).toLocaleString("en-IN")}*\n• Advances already deducted: ₹${Math.round(facts.advances).toLocaleString("en-IN")}\n• Payout ceiling guardrail: PASSED\n\n• Reply *"haan bhejo"* to pay all, and each worker gets a Hindi voice payslip.`,
+      };
+    }
+
+    case "attendance_checkin": {
+      const worker = await resolveWorker(ctx);
+      await meeraCheckIn(ctx.db, ctx.storeId, worker, channel);
+      const profile = AGENT_PROFILES["meera-staff"];
+      return {
+        reply: `${profile.avatar} *${profile.name} (${profile.role})*\n\n✅ Haaziri darj ho gayi hai! Check-in recorded for *${greetingName}* at ${timeLabel()} IST.\nStatus: *PRESENT*.\n\nAaj ka attendance: *${facts.staffPresent}/${facts.staff.length}* present.`,
+      };
+    }
+
+    case "create_agent": {
+      const res = await compileSpec({ prompt: ctx.text, template_id: null });
+      if (res.rejected) {
+        return { reply: `✨ *Studio Compiler*\n\n⚠️ ${res.reason}` };
+      }
+      return {
+        reply: `✨ *No-Code Agent Studio*\n\nCustom agent compiled!\n• Name: *${res.spec.name}*\n• Role: ${res.spec.role}\n• Trigger: ${res.spec.trigger}\n\n• Status: STAGED — hire it from the Studio view (or say *"hire agent"*).`,
+      };
+    }
+
+    default:
+      return undefined;
   }
 }
 
-async function sendReply(ctx: InboundTextContext, agentName: string, avatar: string, replyText: string): Promise<void> {
-  // 1. Deliver text back to the WhatsApp sender
+/** Matches a checker-in to a real staff row by phone digits, then by name. */
+async function resolveWorker(ctx: InboundTextContext): Promise<string> {
   try {
-    const channel = getActiveWhatsAppChannel();
-    console.log(`[orchestrator] Sending reply from ${agentName} to ${ctx.identityId}...`);
-    await channel.sendText({
-      storeId: ctx.storeId,
-      toIdentityId: ctx.identityId,
-      text: replyText,
-    });
-    console.log(`[orchestrator] Reply successfully delivered to ${ctx.identityId}`);
-  } catch (err) {
-    console.error(`[orchestrator] failed to send WhatsApp reply to ${ctx.identityId}:`, err);
+    const rows = await ctx.db.select().from(schema.staff).where(eq(schema.staff.storeId, ctx.storeId));
+    const digits = ctx.identityId.replace(/[^0-9]/g, "").slice(-10);
+    const byPhone = rows.find((r) => r.phone.replace(/[^0-9]/g, "").endsWith(digits) && digits.length >= 10);
+    if (byPhone) return byPhone.id;
+    const name = (ctx.senderName ?? "").toLowerCase().split(/\s+/)[0];
+    const byName = rows.find((r) => name && r.name.toLowerCase() === name);
+    if (byName) return byName.id;
+  } catch {
+    // fall through to identityId
+  }
+  return ctx.identityId;
+}
+
+function describeDecisionOutcome(
+  kind: DecisionKind,
+  id: string,
+  outcome: Awaited<ReturnType<typeof decideDecision>>,
+): string {
+  if (!outcome.ok) {
+    if (outcome.error === "ALREADY_DECIDED") {
+      return `🤖 *Cortex Assistant*\n\nYeh decision (${id}) pehle hi *${outcome.status}* ho chuka hai — dobara action nahi hoga (idempotency guard).`;
+    }
+    if (outcome.error === "EXPIRED") {
+      return `🤖 *Cortex Assistant*\n\nDecision ${id} expire ho gaya tha, isliye execute nahi kiya. Agent dobara stage karega.`;
+    }
+    return `🤖 *Cortex Assistant*\n\nDecision ${id} nahi mila. Command Center par latest card dekh lijiye.`;
   }
 
-  // 2. Showcase agent action on Dashboard Live Task Stream
+  const response = outcome.response;
+  if (response.status === "REJECTED") {
+    return `🤖 *Cortex Assistant*\n\n❌ Decision ${id} (${kind}) reject kar diya gaya. Koi WhatsApp message ya payment nahi bheja.`;
+  }
+
+  const result = "result" in response && response.result ? response.result : {};
+  const details = describeResult(kind, result as Record<string, unknown>);
+  const soundbox = "soundbox_announcement" in response && response.soundbox_announcement
+    ? `\n\n🔊 *Soundbox:* ${response.soundbox_announcement}`
+    : "";
+  return `🤖 *Cortex Assistant*\n\n✅ Approved and executed: *${kind}* (${id}).\n${details}${soundbox}`;
+}
+
+function describeResult(kind: DecisionKind, result: Record<string, unknown>): string {
+  const inr = (n: unknown) => `₹${Number(n ?? 0).toLocaleString("en-IN")}`;
+  switch (kind) {
+    case "VOUCHER_CAMPAIGN":
+      return `• Vouchers sent: ${result.dispatched_vouchers ?? result.reminders_sent ?? 0}\n• Projected recovery: ${inr(result.attributed_projected_revenue ?? 0)}`;
+    case "KHATA_REMINDER_BATCH":
+      return `• Reminders sent: ${result.reminders_sent ?? 0}\n• Outstanding covered: ${inr(result.amount_outstanding ?? 0)}`;
+    case "PURCHASE_ORDER":
+      return `• PO: ${result.po_id ?? "-"}\n• Supplier: ${result.supplier ?? "-"}\n• Total: ${inr(result.total ?? 0)}`;
+    case "PAYROLL_PAYOUT":
+      return `• Workers paid: ${result.workers_paid ?? 0}\n• Total paid: ${inr(result.total_paid ?? 0)}`;
+    default:
+      return Object.entries(result)
+        .map(([k, v]) => `• ${k.replace(/_/g, " ")}: ${String(v)}`)
+        .join("\n");
+  }
+}
+
+/**
+ * Sarvam-backed employee reply. The system prompt carries the persona and
+ * live store facts; prior turns are passed as real chat messages so
+ * follow-ups and pronoun references work.
+ */
+async function composeAgentReply(args: {
+  agentId: ResponderId;
+  senderName: string;
+  text: string;
+  facts: StoreFacts;
+  turns: ChatTurn[];
+  isVoiceMessage?: boolean;
+}): Promise<string> {
+  const profile = isChatAgent(args.agentId) ? AGENT_PROFILES[args.agentId] : undefined;
+  const fallback = profile ? fallbackReply(args.facts, profile.id, args.senderName) : defaultCoordinatorReply(args.facts);
+
+  if (!isLlmEnabled()) return fallback;
+
+  const persona = profile
+    ? `You are ${profile.name}, the AI ${profile.role} for ${args.facts.storeName} on WhatsApp. Your responsibilities: ${profile.domain}.`
+    : `You are Cortex, the back-office coordinator for ${args.facts.storeName} on WhatsApp. You speak for the team: Priya (sales), Aman (payments), Vikram (stock), Munim (accounts), Meera (staff).`;
+
+  const languageHint = detectLanguage(args.text);
+  const voiceHint = args.isVoiceMessage ? "The merchant sent a voice note — reply naturally as if speaking back. Keep it conversational and spoken-language style." : "";
+
+  const system = [
+    persona,
+    `You are chatting one-to-one with ${args.senderName}, the shop owner.`,
+    `LIVE STORE DATA (authoritative, read from the counter database just now):`,
+    renderStoreContext(args.facts, args.agentId),
+    `LANGUAGE: Reply in ${languageHint}.`,
+    voiceHint,
+    `RULES:`,
+    `- Use the exact live numbers above. Never say you lack access to data.`,
+    `- Reply in the merchant's language: Hinglish by default, English if they wrote English, Devanagari if they wrote Devanagari.`,
+    `- Be warm, specific and brief: 3-6 short lines or bullets. Use WhatsApp *bold* sparingly.`,
+    `- Answer the question first, then give ONE clear next action with the exact phrase the merchant can reply.`,
+    `- Never invent customers, SKU quantities, balances, or decisions. Never claim an action happened unless the live data shows it.`,
+    `- If the question truly belongs to a colleague, say which colleague handles it in one short line instead of guessing.`,
+    `- No markdown headings, no tables, no code blocks.`,
+    `- For voice replies: keep sentences shorter, use natural speech patterns (accha, theek hai, ji, haan).`,
+  ].join("\n");
+
+  const messages: LlmMessage[] = [...toLlmHistory(args.turns.slice(-8)), { role: "user", content: args.text }];
+
+  try {
+    const { text } = await getLlmClient().complete({
+      system,
+      messages,
+      maxTokens: 320,
+      temperature: 0.45,
+    });
+    const cleaned = text.trim();
+    if (cleaned.length > 10 && !cleaned.startsWith("[offline-stub")) return cleaned;
+  } catch (err) {
+    console.error("[orchestrator] LLM reply failed:", (err as Error).message);
+  }
+  return fallback;
+}
+
+/** Detect the script/language of the user's message for appropriate reply language. */
+function detectLanguage(text: string): "Hinglish (Hindi written in Latin script)" | "English" | "Devanagari Hindi" | "Marathi" {
+  const devanagari = /[\u0900-\u097F]/.test(text);
+  if (devanagari) return "Devanagari Hindi";
+  const hinglish = /\b(hai|hoon|kya|kaise|kitna|kahan|kab|kyun|nahi|haan|theek|accha|bhejo|kardo|udhaar|khata|paisa|rupaye|sahi|galat)\b/i.test(text);
+  if (hinglish) return "Hinglish (Hindi written in Latin script)";
+  const marathi = /\b(ahe|kay|kuthe|kevha|kaay|ho|nahi|hou|theek|bara|chhan)\b/i.test(text);
+  if (marathi) return "Marathi";
+  return "English";
+}
+
+function defaultCoordinatorReply(facts: StoreFacts): string {
+  const pending = facts.pendingDecisions.map((d) => `• ${d.kind} (${d.id}) from ${d.agentName}`).join("\n");
+  return `🤖 *Cortex Assistant*
+
+Main aapki baat sahi employee tak pahucha dunga. Live snapshot:
+• Khata outstanding: ₹${Math.round(facts.khata.total).toLocaleString("en-IN")}
+• Staff present: ${facts.staffPresent}/${facts.staff.length}
+• Low-stock SKUs: ${facts.stock.filter((s) => s.coverDays < 1.5).length}
+${pending ? `\n*Pending approvals:*\n${pending}\n` : ""}
+Kis employee se baat karni hai — Priya (sales), Aman (payments), Vikram (stock), Munim (accounts) ya Meera (staff)?`;
+}
+
+async function sendReply(ctx: InboundTextContext, responder: ResponderId, replyText: string): Promise<void> {
+  const profile = isChatAgent(responder) ? AGENT_PROFILES[responder] : undefined;
+  const agentName = profile?.name ?? "Cortex Assistant";
+  const agentId = profile?.id ?? "cortex-orchestrator";
+  const avatar = profile?.avatar ?? "🤖";
+
+  try {
+    const active = getActiveWhatsAppChannel();
+    console.log(`[orchestrator] ${agentName} -> ${ctx.identityId}`);
+    await active.sendText({ storeId: ctx.storeId, toIdentityId: ctx.identityId, text: replyText });
+
+    // If the inbound was a voice message and Sarvam is configured, also send a voice note
+    if (ctx.audioBuffer) {
+      const voice = getVoiceProvider();
+      if ("synthesize" in voice) {
+        try {
+          const ttsVoice = voice as TtsProvider;
+          let speaker = "meera";
+          if (responder !== "cortex-orchestrator" && isChatAgent(responder)) {
+            const { AGENT_VOICE_PERSONAS } = await import("@cortex/channels");
+            const persona = AGENT_VOICE_PERSONAS[responder];
+            if (persona) speaker = persona.speaker;
+          }
+          const replyAudio = await ttsVoice.synthesize(replyText, { speaker });
+          await active.sendVoiceNote({ storeId: ctx.storeId, toIdentityId: ctx.identityId, script: replyText });
+          console.log(`[orchestrator] Voice reply sent to ${ctx.identityId} via ${speaker}`);
+        } catch (err) {
+          console.error(`[orchestrator] Voice reply synthesis/send failed:`, err);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[orchestrator] failed to send reply to ${ctx.identityId}:`, err);
+  }
+
   await appendActivityEvent(ctx.db, {
     storeId: ctx.storeId,
-    agentId: `agent-${agentName.toLowerCase()}`,
+    agentId,
     agentName,
     agentAvatar: avatar,
-    message: `Replied to ${ctx.senderName ?? "WhatsApp"}: ${replyText.split("\n")[0] ?? replyText}`,
+    message: `Replied to ${ctx.senderName ?? "WhatsApp"}: ${replyText.split("\n").filter(Boolean).slice(0, 2).join(" ") || replyText}`,
     type: "ACTION_EXECUTED",
     severity: "SUCCESS",
   });
 }
-
-/**
- * Intelligent Agent Brain:
- * Invokes LLM (Ollama qwen2.5:7b-instruct locally or Anthropic) with the agent's persona,
- * live real-time store database context, and user prompt. If LLM is unreachable or returns
- * an offline stub, smoothly falls back to the deterministic domain report.
- */
-async function askAgentBrain(
-  ctx: InboundTextContext,
-  agentName: string,
-  role: string,
-  storeContext: string,
-  fallbackText: string
-): Promise<string> {
-  try {
-    const llm = getLlmClient();
-    const sender = ctx.senderName || (ctx.role === "OWNER" ? "Ramesh (Owner)" : "Atharva Chaskar");
-    const system = [
-      `You are ${agentName}, the AI ${role} for Ramesh Sweets & Restaurant on WhatsApp.`,
-      `You are chatting directly with ${sender}.`,
-      `You have real-time live access to the counter database.`,
-      `GUIDELINES:`,
-      `- Speak naturally in polite, helpful Indian English / Hinglish (e.g. Namaste, Ji, hisaab, udhaar, khata, etc.).`,
-      `- Keep responses concise (3 to 6 short lines or bullet points), practical, and conversational for a fast-paced retail business.`,
-      `- Answer the user's specific query using facts and numbers from your STORE CONTEXT below.`,
-      `- Always suggest a clear next action the merchant can reply with.`,
-      `STORE CONTEXT:`,
-      storeContext,
-    ].join("\n");
-
-    const res = await llm.complete({
-      system,
-      prompt: ctx.text,
-      maxTokens: 250,
-    });
-
-    if (res.text && !res.text.startsWith("[offline-stub") && res.text.trim().length > 10) {
-      return res.text.trim();
-    }
-  } catch (err) {
-    console.error(`[orchestrator] LLM reasoning error for ${agentName}:`, err);
-  }
-  return fallbackText;
-}
-

@@ -5,6 +5,7 @@ export * from "./decisions.js";
 export * from "./activity.js";
 export * from "./cost.js";
 export * from "./channels.js";
+export * from "./chat.js";
 export * from "./sales.js";
 export * from "./procurement.js";
 export * from "./khata.js";

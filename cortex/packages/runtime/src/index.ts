@@ -10,3 +10,4 @@ export * from "./inbound.js";
 export * from "./task-dag.js";
 export * from "./scheduler.js";
 export * from "./llm.js";
+export type { VoiceCapableProvider } from "./inbound.js";

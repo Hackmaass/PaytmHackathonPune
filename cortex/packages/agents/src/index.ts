@@ -11,6 +11,9 @@ import { handleInboundMessage } from "./orchestrator.js";
 
 export { priya, aman, munim, vikram, meera, studio };
 export * from "./orchestrator.js";
+export * from "./agent-registry.js";
+export * from "./conversation.js";
+export * from "./store-context.js";
 
 // Register master inbound message orchestrator
 registerInboundTextHandler(handleInboundMessage);

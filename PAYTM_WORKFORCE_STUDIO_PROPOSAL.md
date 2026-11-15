@@ -6,6 +6,7 @@
 
 ## 1. Executive Summary & Track 1 Mandate
 
+
 ### The Hackathon Problem Statement
 > *"Track 1 — Merchant Growth AI: Build AI that drives merchant growth, revenue recovery, customer retention, and operational efficiency.
 > Ideas: AI employees, WhatsApp business agents, sales win-back, dynamic pricing/vouchers, khata acceleration, procurement negotiation, and compliance."*
@@ -404,6 +405,7 @@ SLIDE 1: TITLE
 Headline:  Cortex — The AI Back-Office for Every Bharat MSME
 Subtitle:  Hire AI employees for sales, accounts, purchase, staff & support — run from WhatsApp
 Track:     Track 1: Merchant Growth AI
+
 Team Name: [Your Team Name]
 Visual:    Laptop running Cortex + phone showing WhatsApp approval card + Soundbox
 

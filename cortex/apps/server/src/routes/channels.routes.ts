@@ -2,12 +2,18 @@ import { Router } from "express";
 import type { CortexDb } from "@cortex/db";
 import { DEMO_STORE_ID } from "@cortex/db";
 import { decideDecision, dispatchInboundText } from "@cortex/runtime";
-import { parseWhatsAppWebhook, getWhatsAppLinkStatus, getVoiceProvider, SarvamVoiceProvider, type IndicVoiceProvider } from "@cortex/channels";
+import { parseWhatsAppWebhook, getWhatsAppLinkStatus, getVoiceProvider, SarvamVoiceProvider, type IndicVoiceProvider, WhatsAppChannel } from "@cortex/channels";
 import { SimulatorInboundSchema } from "@cortex/shared";
 
 export function channelsRouter(db: CortexDb): Router {
   const router = Router();
   const storeId = DEMO_STORE_ID;
+
+  // WhatsApp channel instance for media download (if token is available)
+  let waChannel: WhatsAppChannel | null = null;
+  if (process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID) {
+    waChannel = new WhatsAppChannel(process.env.WHATSAPP_PHONE_NUMBER_ID, process.env.WHATSAPP_ACCESS_TOKEN);
+  }
 
   // Baileys QR-link status (OpenClaw's approach) — poll this to render the
   // QR code and know when a real WhatsApp is actually linked.
@@ -41,7 +47,10 @@ export function channelsRouter(db: CortexDb): Router {
       if (event.kind === "BUTTON" && event.button) {
         await decideDecision(db, { decisionId: event.button.decisionId, storeId, action: event.button.action, source: "WHATSAPP" });
       } else if (event.kind === "TEXT" && event.text) {
-        await dispatchInboundText({ db, storeId, role: event.role, identityId: event.identityId, text: event.text });
+        await dispatchInboundText({ db, storeId, role: event.role, identityId: event.identityId, text: event.text, senderName: event.senderName });
+      } else if (event.kind === "VOICE" && event.audioId) {
+        // Handle inbound voice note: download → transcribe → process → synthesize reply
+        await handleInboundVoice(event, storeId, db);
       }
     } catch (err) {
       console.error("[whatsapp] webhook handling failed:", err);
@@ -83,6 +92,32 @@ export function channelsRouter(db: CortexDb): Router {
         text: input.text,
       });
       return res.json({ accepted: true, ...(outcome.routedTo ? { routed_to: outcome.routedTo } : {}) });
+    }
+
+    if (input.audio_base64) {
+      const audioBuffer = Buffer.from(input.audio_base64, "base64");
+      const mimeType = input.audio_mime_type || "audio/wav";
+      const voice = getVoiceProvider();
+      if ("transcribe" in voice) {
+        try {
+          const transcript = await (voice as IndicVoiceProvider).transcribe(audioBuffer, mimeType);
+          if (transcript && transcript.trim()) {
+            const outcome = await dispatchInboundText({
+              db,
+              storeId,
+              role: input.role,
+              identityId: input.identity_id,
+              text: transcript,
+              audioBuffer,
+              audioMimeType: mimeType,
+            });
+            return res.json({ accepted: true, transcript, ...(outcome.routedTo ? { routed_to: outcome.routedTo } : {}) });
+          }
+        } catch (err) {
+          console.error("[simulator] voice transcription failed:", err);
+        }
+      }
+      return res.json({ accepted: true, transcript: "" });
     }
 
     res.json({ accepted: true });
@@ -199,6 +234,70 @@ export function channelsRouter(db: CortexDb): Router {
       res.status(500).json({ success: false, error: (err as Error).message });
     }
   });
+
+  // Inbound voice handler: download → transcribe → process → synthesize reply
+  async function handleInboundVoice(event: any, storeId: string, db: CortexDb): Promise<void> {
+    if (!waChannel) {
+      console.warn("[whatsapp] Voice received but no WhatsApp channel configured for media download");
+      return;
+    }
+    if (!event.audioId) return;
+
+    try {
+      // 1. Download audio from WhatsApp
+      const audioBuffer = await waChannel.downloadMedia(event.audioId);
+      const mimeType = event.audioMimeType || "audio/ogg";
+
+      // 2. Transcribe using Sarvam
+      const voice = getVoiceProvider();
+      if (!("transcribe" in voice)) {
+        console.warn("[whatsapp] Voice received but Sarvam STT not configured");
+        return;
+      }
+      const transcript = await (voice as IndicVoiceProvider).transcribe(audioBuffer, mimeType);
+      if (!transcript || !transcript.trim()) {
+        console.warn("[whatsapp] Empty transcript from voice note");
+        return;
+      }
+
+      console.log(`[whatsapp] Voice transcribed: "${transcript}"`);
+
+      // 3. Process as text message through orchestrator
+      const outcome = await dispatchInboundText({
+        db,
+        storeId,
+        role: event.role,
+        identityId: event.identityId,
+        text: transcript,
+        senderName: event.senderName,
+        channel: "WHATSAPP",
+        audioBuffer,
+        audioMimeType: mimeType,
+      });
+
+      // 4. If Sarvam is configured, synthesize a voice reply
+      if (outcome.replyText && "synthesize" in voice) {
+        try {
+          const responderAgentId = outcome.routedTo;
+          let speaker = "meera";
+          if (responderAgentId && responderAgentId !== "cortex-orchestrator") {
+            // Use agent-specific voice persona
+            const { AGENT_VOICE_PERSONAS } = await import("@cortex/channels");
+            const persona = AGENT_VOICE_PERSONAS[responderAgentId];
+            if (persona) speaker = persona.speaker;
+          }
+          const replyAudio = await (voice as IndicVoiceProvider).synthesize(outcome.replyText, { speaker });
+          // Note: Sending actual audio via WhatsApp requires media upload first.
+          // For now, the text reply is sent via the orchestrator's sendReply.
+          // The audio buffer is available in outcome.replyAudio for future enhancement.
+        } catch (err) {
+          console.error("[whatsapp] Voice reply synthesis failed:", err);
+        }
+      }
+    } catch (err) {
+      console.error("[whatsapp] Inbound voice handling failed:", err);
+    }
+  }
 
   return router;
 }

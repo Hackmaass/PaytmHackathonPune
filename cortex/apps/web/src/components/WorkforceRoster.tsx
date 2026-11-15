@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentSummary } from "@cortex/shared";
 import { api } from "../api.js";
 
@@ -33,7 +33,18 @@ export function WorkforceRoster(props: { agents: AgentSummary[]; onGoToStudio: (
 function AgentCard(props: { agent: AgentSummary; onChanged: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [running, setRunning] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const { agent } = props;
+
+  // Close the ⋮ menu when clicking anywhere outside it
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleMouseDown(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    }
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => document.removeEventListener("mousedown", handleMouseDown);
+  }, [menuOpen]);
 
   async function runNow(): Promise<void> {
     setMenuOpen(false);
@@ -54,12 +65,18 @@ function AgentCard(props: { agent: AgentSummary; onChanged: () => void }) {
           <span className="agent-card__avatar">{agent.avatar}</span>
           {agent.name}
         </div>
-        <button className="agent-card__menu-btn" onClick={() => setMenuOpen((v) => !v)}>
+        <button
+          className="agent-card__menu-btn"
+          aria-haspopup="true"
+          aria-expanded={menuOpen}
+          aria-label={`Actions for ${agent.name}`}
+          onClick={() => setMenuOpen((v) => !v)}
+        >
           ⋮
         </button>
       </div>
       {menuOpen && (
-        <div style={{ position: "absolute", right: 10, top: 40, background: "white", border: "1px solid var(--card-border)", borderRadius: 8, zIndex: 5 }}>
+        <div ref={menuRef} style={{ position: "absolute", right: 10, top: 40, background: "white", border: "1px solid var(--card-border)", borderRadius: 8, zIndex: 5, boxShadow: "var(--shadow-card-hover)" }}>
           <button className="btn secondary" style={{ display: "block", width: "100%", border: "none" }} onClick={runNow} disabled={running}>
             {running ? "Running…" : "Run now"}
           </button>

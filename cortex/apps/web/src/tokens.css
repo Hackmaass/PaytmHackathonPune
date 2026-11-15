@@ -18,4 +18,51 @@
   --text-muted: #64748b;
   --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06);
   --shadow-card-hover: 0 4px 12px rgba(15, 23, 42, 0.1);
+
+  /* ---- Surfaces & lines ---------------------------------------------- */
+  --surface: #ffffff;
+  --surface-muted: #f8fafc;
+  --surface-sunken: #eef2f7;
+  --navy-soft: #e8eef8; /* navy at 8% over white — tinted info surfaces */
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --ink: #0f172a;
+  --ink-muted: #5b6b82; /* AA on white and on --surface-muted (4.9:1) */
+
+  /* ---- Semantic states (each pair checked >= 4.5:1 for body text) ----- */
+  --ok-ink: #14532d;
+  --ok-fill: #15803d;
+  --ok-fill-hover: #166534;
+  --ok-bg: #ecfdf5;
+  --ok-line: #a7f3d0;
+  --warn-ink: #92400e;
+  --warn-bg: #fffbeb;
+  --warn-line: #fde68a;
+  --bad-ink: #991b1b;
+  --bad-bg: #fef2f2;
+  --bad-line: #fecaca;
+  --info-ink: #1e40af;
+  --info-bg: #eff6ff;
+  --info-line: #bfdbfe;
+
+  /* ---- Radii, elevation, rhythm --------------------------------------- */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --shadow-2: 0 6px 20px rgba(2, 20, 51, 0.1);
+  --shadow-nav: 0 -1px 0 rgba(2, 20, 51, 0.06), 0 -8px 24px rgba(2, 20, 51, 0.08);
+
+  /* ---- Motion --------------------------------------------------------- */
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+
+  /* ---- Layout --------------------------------------------------------- */
+  --tap: 44px; /* minimum interactive target, WCAG 2.5.8 comfortable */
+  --nav-h: 64px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
 }

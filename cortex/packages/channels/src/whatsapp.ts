@@ -51,16 +51,42 @@ export class WhatsAppChannel implements ChannelAdapter {
     });
   }
 
+  /**
+   * Downloads media from WhatsApp Cloud API (voice notes, images, etc.)
+   * Returns the binary buffer.
+   */
+  async downloadMedia(mediaId: string): Promise<Buffer> {
+    // Step 1: Get the media URL
+    const urlRes = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${this.accessToken}` },
+    });
+    if (!urlRes.ok) {
+      throw new Error(`WhatsApp media URL fetch failed: HTTP ${urlRes.status} ${await urlRes.text()}`);
+    }
+    const urlData = (await urlRes.json()) as { url?: string };
+    if (!urlData.url) throw new Error("WhatsApp media URL not found in response");
+
+    // Step 2: Download the actual media file
+    const mediaRes = await fetch(urlData.url, {
+      headers: { Authorization: `Bearer ${this.accessToken}` },
+    });
+    if (!mediaRes.ok) {
+      throw new Error(`WhatsApp media download failed: HTTP ${mediaRes.status} ${await mediaRes.text()}`);
+    }
+    const arrayBuffer = await mediaRes.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+
   async sendVoiceNote(note: OutboundVoiceNote): Promise<void> {
-    // Sending an actual .ogg/opus voice note requires the Media Upload
-    // endpoint first; text delivery of the script is the honest fallback
-    // until that upload step is wired to a real TTS render.
+    // For now, send as text with the script. In a production setup,
+    // this would upload the audio to WhatsApp media endpoint first,
+    // then send as type: "audio" with the media ID.
     await this.send({ to: note.toIdentityId, type: "text", text: { body: `🔊 ${note.script}` } });
   }
 }
 
 /** Meta webhook payload -> our normalized InboundEvent. Only the shapes
- * this product uses (text, button reply) are parsed. */
+ * this product uses (text, button reply, audio) are parsed. */
 export function parseWhatsAppWebhook(body: unknown, storeId: string): InboundEvent | undefined {
   const entry = (body as Record<string, unknown>)?.entry as Array<Record<string, unknown>> | undefined;
   const change = entry?.[0]?.changes as Array<Record<string, unknown>> | undefined;
@@ -87,6 +113,22 @@ export function parseWhatsAppWebhook(body: unknown, storeId: string): InboundEve
         externalId: from,
         kind: "BUTTON",
         button: { decisionId, action },
+        receivedAt,
+      };
+    }
+  }
+  if (message.type === "audio") {
+    const audio = message.audio as { id?: string; mime_type?: string };
+    if (audio.id) {
+      return {
+        channel: "WHATSAPP",
+        storeId,
+        role: "OWNER",
+        identityId: from,
+        externalId: from,
+        kind: "VOICE",
+        audioId: audio.id,
+        audioMimeType: audio.mime_type ?? "audio/ogg",
         receivedAt,
       };
     }

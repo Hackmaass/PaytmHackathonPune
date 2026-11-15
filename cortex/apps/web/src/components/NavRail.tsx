@@ -16,7 +16,7 @@ export function NavRail(props: {
 }) {
   return (
     <nav className="nav-rail">
-      <div className="nav-rail__logo">C</div>
+      <div className="nav-rail__logo">P</div>
       {NAV_ITEMS.map((item) => {
         const count = props.badgeCounts[item.id] ?? 0;
         return (

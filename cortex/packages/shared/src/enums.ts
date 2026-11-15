@@ -22,6 +22,7 @@ export const EVENT_TYPES = [
   "COMPLIANCE_DUE",
   "ATTENDANCE_SUMMARY",
   "AGENT_HIRED",
+  "AGENT_HANDOFF",
 ] as const;
 export const EventTypeEnum = zenum(EVENT_TYPES);
 export type EventType = z.infer<typeof EventTypeEnum>;
@@ -37,6 +38,8 @@ export const DECISION_KINDS = [
   "PURCHASE_ORDER",
   "PAYROLL_PAYOUT",
   "KHATA_REMINDER_BATCH",
+  // Generic 1-tap approval for anything a Studio-compiled agent wants to send.
+  "CUSTOM_AGENT_ACTION",
 ] as const;
 export const DecisionKindEnum = zenum(DECISION_KINDS);
 export type DecisionKind = z.infer<typeof DecisionKindEnum>;

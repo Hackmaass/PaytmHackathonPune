@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { getDb, seedDemoStore, DEMO_STORE_ID } from "@cortex/db";
-import { AGENT_RUNNERS } from "@cortex/agents"; // side effect: registers decision executors
+import { AGENT_RUNNERS, studio } from "@cortex/agents"; // side effect: registers decision executors
 import { activityBus, decideDecision, dispatchInboundText, Scheduler } from "@cortex/runtime";
 import {
   getVoiceProvider,
@@ -66,6 +66,20 @@ async function main(): Promise<void> {
     },
   });
   registeredCount += 1;
+
+  // Studio agents hired from the visual builder are not in AGENT_RUNNERS
+  // (they're created at runtime), so one minutely ticker asks the Studio
+  // engine which of them are due right now. `shouldRunTrigger` decides.
+  scheduler.register({
+    id: "studio-custom-agents",
+    label: "Studio custom agents (every minute)",
+    schedule: { type: "MINUTELY" },
+    handler: async () => {
+      await studio.runDueCustomAgents(db, DEMO_STORE_ID, new Date());
+    },
+  });
+  registeredCount += 1;
+
   scheduler.start();
   console.log(`Scheduler started: ${registeredCount} routine(s) registered`);
 

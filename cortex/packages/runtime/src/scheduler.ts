@@ -1,11 +1,13 @@
 import { hhmm, dayOfMonth } from "./clock.js";
 
 export type RoutineSchedule =
+  | { type: "MINUTELY" } // every polling tick, at most once a minute
   | { type: "DAILY"; time: string } // "HH:MM" IST
   | { type: "MONTHLY"; day: number; time: string };
 
 /** Pure predicate — does `schedule` fire at instant `at`? Minute-resolution. */
 export function matchesNow(schedule: RoutineSchedule, at: Date): boolean {
+  if (schedule.type === "MINUTELY") return true;
   const time = hhmm(at);
   if (schedule.type === "DAILY") return time === schedule.time;
   return dayOfMonth(at) === schedule.day && time === schedule.time;

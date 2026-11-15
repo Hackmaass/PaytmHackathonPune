@@ -26,8 +26,13 @@ export function RemoteControlMirror(props: {
       } else if (res) {
         setReceipt("❌ Rejected");
       }
-    } catch {
-      setReceipt("⚠️ Already decided — refresh");
+    } catch (err) {
+      const status = (err as Error & { status?: number }).status;
+      setReceipt(
+        status === 409
+          ? "⚠️ Already decided on your phone — refresh to see the result"
+          : `⚠️ Couldn't reach the server — nothing was actioned. Try again.`,
+      );
     } finally {
       setBusy(false);
       setTimeout(() => setReceipt(undefined), 4000);
@@ -54,7 +59,7 @@ export function RemoteControlMirror(props: {
             </div>
           </div>
         )}
-        {receipt && <div className="phone-frame__receipt">{receipt}</div>}
+        {receipt && <div className="phone-frame__receipt" role="status">{receipt}</div>}
       </div>
       {props.pending.length > 1 && (
         <div className="phone-frame__pager">

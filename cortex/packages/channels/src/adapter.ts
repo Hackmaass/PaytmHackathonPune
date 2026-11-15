@@ -13,6 +13,9 @@ export interface InboundEvent {
   button?: { decisionId: string; action: "APPROVE" | "REJECT" };
   receivedAt: Date;
   senderName?: string;
+  /** For VOICE kind: WhatsApp media ID to download the audio */
+  audioId?: string;
+  audioMimeType?: string;
 }
 
 export interface OutboundCard {

@@ -29,6 +29,12 @@ export const KhataReminderBatchResultSchema = z.object({
   amount_outstanding: z.number(),
 });
 
+export const CustomAgentActionResultSchema = z.object({
+  messages_sent: z.number().int(),
+  agent_id: z.string(),
+  headline: z.string().optional(),
+});
+
 // AGENTS.md §5.3 response — result shape discriminated by decision_kind
 export const DecisionActionResponseSchema = z.discriminatedUnion("decision_kind", [
   z.object({
@@ -64,6 +70,15 @@ export const DecisionActionResponseSchema = z.discriminatedUnion("decision_kind"
     decision_kind: z.literal("KHATA_REMINDER_BATCH"),
     status: DecisionStatusEnum,
     result: KhataReminderBatchResultSchema,
+    soundbox_triggered: z.boolean(),
+    soundbox_announcement: z.string().optional(),
+  }),
+  z.object({
+    success: z.boolean(),
+    decision_id: z.string(),
+    decision_kind: z.literal("CUSTOM_AGENT_ACTION"),
+    status: DecisionStatusEnum,
+    result: CustomAgentActionResultSchema,
     soundbox_triggered: z.boolean(),
     soundbox_announcement: z.string().optional(),
   }),

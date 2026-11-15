@@ -2,6 +2,7 @@ import { useState } from "react";
 import { usePolling } from "../hooks/usePolling.js";
 import { api } from "../api.js";
 import { soundboxAudio } from "../services/soundboxAudio.js";
+import { StaleNotice } from "../components/StaleNotice.js";
 
 const STATUS_COLOR: Record<string, string> = { REMINDER_DRAFTED: "amber", REMINDED: "blue", PAID: "green" };
 
@@ -10,7 +11,7 @@ export function KhataAccountsView() {
   const recon = usePolling(() => api.getReconciliation(), 5000);
   const compliance = usePolling(api.getComplianceCalendar, 15000);
   const [showAdd, setShowAdd] = useState(false);
-  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
 
   function openWhatsAppReminder(name: string, phone: string, balance: number) {
     const cleanPhone = phone.replace(/[^0-9]/g, "");
@@ -18,7 +19,7 @@ export function KhataAccountsView() {
       `Namaste ${name} ji! Umeed hai aap kushal mangal hain. Ramesh Sweets par aapka ₹${balance.toLocaleString("en-IN")} ka balance baaki hai. Suvidha ke liye Paytm UPI dwara bhugtan karein: paytm.me/ramesh-sweets 🙏`,
     );
     window.open(`https://wa.me/${cleanPhone}?text=${msg}`, "_blank");
-    setActionNotice(`WhatsApp draft opened for ${name} (₹${balance}).`);
+    setActionNotice({ tone: "success", text: `WhatsApp draft opened for ${name} (₹${balance}).` });
     soundboxAudio.queueAnnouncement(`Munim: ${name} ji ko udhaar reminder WhatsApp bhej diya gaya hai.`);
     setTimeout(() => setActionNotice(null), 4000);
   }
@@ -30,10 +31,12 @@ export function KhataAccountsView() {
       </div>
 
       {actionNotice && (
-        <div className="banner success" style={{ marginBottom: 12 }}>
-          {actionNotice}
+        <div className={`banner ${actionNotice.tone === "success" ? "success" : "error"}`} style={{ marginBottom: 12 }} role="status">
+          {actionNotice.text}
         </div>
       )}
+
+      <StaleNotice error={khata.error} label="udhaar ledger" />
 
       <div className="split-60-40">
         <section className="card">
@@ -43,7 +46,21 @@ export function KhataAccountsView() {
               + Add Entry
             </button>
           </div>
-          {showAdd && <AddEntryForm onDone={() => { setShowAdd(false); void khata.refresh(); }} />}
+          {showAdd && (
+            <AddEntryForm
+              customers={khata.data?.entries ?? []}
+              onDone={() => {
+                setShowAdd(false);
+                setActionNotice({ tone: "success", text: "Entry saved to the udhaar ledger." });
+                setTimeout(() => setActionNotice(null), 4000);
+                void khata.refresh();
+              }}
+              onError={(msg) => {
+                setActionNotice({ tone: "error", text: msg });
+                setTimeout(() => setActionNotice(null), 5000);
+              }}
+            />
+          )}
           
           {/* Desktop Table View */}
           <div className="overflow-x desktop-only-table">
@@ -123,7 +140,7 @@ export function KhataAccountsView() {
           {recon.data && (
             <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
               <div>POS Sales: ₹{recon.data.pos_sales_total.toLocaleString("en-IN")}</div>
-              <div>PG Settled: ₹{recon.data.pg_settled_total.toLocaleString("en-IN")}</div>
+              <div>Bank Settled (Paytm): ₹{recon.data.pg_settled_total.toLocaleString("en-IN")}</div>
               <div>Cash: ₹{recon.data.cash_total.toLocaleString("en-IN")}</div>
               {recon.data.mismatches.map((m) => (
                 <div key={m.txn_id} className="pill amber" style={{ width: "fit-content" }}>
@@ -145,6 +162,7 @@ export function KhataAccountsView() {
 
       <section className="card">
         <div className="card-title">Compliance Calendar</div>
+        <StaleNotice error={compliance.error} label="compliance calendar" />
         <div className="compliance-timeline">
           {compliance.data?.map((c) => (
             <div className="compliance-item" key={c.id}>
@@ -160,28 +178,66 @@ export function KhataAccountsView() {
   );
 }
 
-function AddEntryForm(props: { onDone: () => void }) {
+function AddEntryForm(props: {
+  customers: Array<{ customer_id: string; name: string }>;
+  onDone: () => void;
+  onError: (message: string) => void;
+}) {
   const [customerId, setCustomerId] = useState("");
   const [type, setType] = useState<"CREDIT" | "PAYMENT">("CREDIT");
   const [amount, setAmount] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const amountNum = Number(amount);
+  const amountValid = amount !== "" && Number.isFinite(amountNum) && amountNum > 0;
+  const canSubmit = Boolean(customerId) && amountValid && !saving;
 
   async function submit(): Promise<void> {
-    if (!customerId || !amount) return;
-    await api.addKhataEntry({ customer_id: customerId, type, amount: Number(amount) });
-    props.onDone();
+    if (!canSubmit) return;
+    setSaving(true);
+    try {
+      await api.addKhataEntry({ customer_id: customerId, type, amount: amountNum });
+      props.onDone();
+    } catch {
+      props.onError("Couldn't save the entry — is the Cortex server running?");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <div style={{ display: "flex", gap: 8, padding: "10px 16px", borderBottom: "1px solid var(--card-border)", flexWrap: "wrap" }}>
-      <input placeholder="Customer ID" value={customerId} onChange={(e) => setCustomerId(e.target.value)} style={{ padding: 6, border: "1px solid var(--card-border)", borderRadius: 6 }} />
-      <select value={type} onChange={(e) => setType(e.target.value as "CREDIT" | "PAYMENT")} style={{ padding: 6, border: "1px solid var(--card-border)", borderRadius: 6 }}>
-        <option value="CREDIT">Credit</option>
-        <option value="PAYMENT">Payment</option>
+      <select
+        value={customerId}
+        onChange={(e) => setCustomerId(e.target.value)}
+        style={{ padding: 6, border: "1px solid var(--card-border)", borderRadius: 6 }}
+        aria-label="Customer"
+      >
+        <option value="">Select customer…</option>
+        {props.customers.map((c) => (
+          <option key={c.customer_id} value={c.customer_id}>
+            {c.name}
+          </option>
+        ))}
       </select>
-      <input placeholder="Amount" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ padding: 6, border: "1px solid var(--card-border)", borderRadius: 6, width: 100 }} />
-      <button className="btn" onClick={() => void submit()}>
-        Save
+      <select value={type} onChange={(e) => setType(e.target.value as "CREDIT" | "PAYMENT")} style={{ padding: 6, border: "1px solid var(--card-border)", borderRadius: 6 }} aria-label="Entry type">
+        <option value="CREDIT">Credit (udhaar given)</option>
+        <option value="PAYMENT">Payment (received)</option>
+      </select>
+      <input
+        placeholder="Amount (₹)"
+        type="number"
+        min={1}
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+        style={{ padding: 6, border: "1px solid var(--card-border)", borderRadius: 6, width: 120 }}
+        aria-label="Amount in rupees"
+        aria-invalid={amount !== "" && !amountValid}
+      />
+      <button className="btn" onClick={() => void submit()} disabled={!canSubmit}>
+        {saving ? "Saving…" : "Save"}
       </button>
+      {amount !== "" && !amountValid && <span className="banner error" style={{ padding: "6px 10px" }}>Enter an amount above ₹0.</span>}
     </div>
   );
 }

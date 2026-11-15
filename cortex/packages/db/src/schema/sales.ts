@@ -51,6 +51,8 @@ export const inventory = pgTable("inventory", {
   grossMarginPct: doublePrecision("gross_margin_pct").notNull().default(0),
   outOfStockAt: timestamp("out_of_stock_at", { withTimezone: true }),
   restockedAt: timestamp("restocked_at", { withTimezone: true }),
+  /** Nearest batch expiry — used by expiry-monitoring agents (Studio). */
+  expiryDate: timestamp("expiry_date", { withTimezone: true }),
 });
 
 export const INVENTORY_DDL = `
@@ -65,6 +67,7 @@ CREATE TABLE IF NOT EXISTS inventory (
   last_price DOUBLE PRECISION NOT NULL DEFAULT 0,
   gross_margin_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
   out_of_stock_at TIMESTAMPTZ,
-  restocked_at TIMESTAMPTZ
+  restocked_at TIMESTAMPTZ,
+  expiry_date TIMESTAMPTZ
 );
 `;

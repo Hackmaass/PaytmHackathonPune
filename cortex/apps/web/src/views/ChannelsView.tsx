@@ -49,7 +49,6 @@ export function ChannelsView(props: { store?: Store; onReset: () => void }) {
 
   const whatsappMode = waStatus?.status === "CONNECTED" ? "LIVE" : "SIMULATOR";
   const telegramMode = props.store?.channels.telegram === "SIMULATOR" ? "SIMULATOR" : "LIVE";
-  const soundboxMode = voiceStatus?.configured ? "SARVAM LIVE" : "OS TTS OFFLINE";
 
   return (
     <div className="view">
@@ -59,7 +58,7 @@ export function ChannelsView(props: { store?: Store; onReset: () => void }) {
 
       <div className="channels-grid">
         <ChannelCard title="🟢 WhatsApp" linked="+91 98765-XXXXX" mode={whatsappMode} />
-        <ChannelCard title="✈️ Telegram" linked="@CortexStoreBot" mode={telegramMode} />
+        <ChannelCard title="✈️ Telegram" linked="@PaytmStoreBot" mode={telegramMode} />
         <ChannelCard
           title="🔊 Soundbox & Voice"
           linked={voiceStatus?.configured ? "Sarvam Bulbul (hi-IN)" : "Windows SAPI (Offline)"}

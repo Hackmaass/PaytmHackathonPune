@@ -43,7 +43,6 @@ export class BaileysWhatsAppChannel implements ChannelAdapter {
   private onEvent: ((event: InboundEvent) => Promise<void>) | undefined;
   private storeId = "";
   private botSentMessageIds = new Set<string>();
-  private atharvaJids = new Set<string>();
   private bootTime = Date.now();
 
   constructor(private readonly authDir: string) {}
@@ -173,23 +172,17 @@ export class BaileysWhatsAppChannel implements ChannelAdapter {
     const pushName = msg.pushName || "";
     const fromMe = Boolean(msg.key.fromMe);
 
-    // 1. Self-chat: Omkar (merchant) texting himself
+    // 1. Self-chat ONLY: the linked account texting itself (the owner's own chat —
+    // shown in WhatsApp as "<Profile Name> (You)", e.g. "Omkar Rane (You)").
+    // STRICT PRIVACY GUARD: no other chat — personal, client, group or
+    // broadcast — is ever read or processed. The QR-linked account only
+    // receives messages the owner deliberately sends to themselves.
     const isSelfChat = Boolean(
       (userPhone && jidClean === userPhone) ||
       (userLid && jidClean === userLid)
     );
-
-    // 2. Atharva Chaskar: team member / collaborator for demo
-    const atharvaEnvPhone = (process.env.ATHARVA_PHONE || process.env.ATHARVA_WHATSAPP || "").replace(/[^0-9]/g, "");
-    const isAtharva = Boolean(
-      /atharva|chaskar/i.test(pushName) ||
-      (atharvaEnvPhone && jidClean === atharvaEnvPhone) ||
-      this.atharvaJids.has(jid) ||
-      this.atharvaJids.has(jidClean)
-    );
-
-    // 3. STRICT PRIVACY GUARD: DO NOT access any other personal/client/group chats
-    if (!isSelfChat && !isAtharva) {
+    if (!isSelfChat) {
+      console.log(`[whatsapp] privacy guard: ignored message from non-self chat ${jid} (only the owner's own chat is processed).`);
       return;
     }
 
@@ -201,13 +194,6 @@ export class BaileysWhatsAppChannel implements ChannelAdapter {
     if (userLid) allowlistRecipient("WHATSAPP", userLid);
     if (jidClean) allowlistRecipient("WHATSAPP", jidClean);
     allowlistRecipient("WHATSAPP", jid);
-
-    if (isAtharva) {
-      this.atharvaJids.add(jid);
-      if (jidClean) {
-        this.atharvaJids.add(jidClean);
-      }
-    }
 
     let text = this.extractText(msg.message);
 
@@ -239,7 +225,8 @@ export class BaileysWhatsAppChannel implements ChannelAdapter {
 
     // For self-chat, deliver replies to the user's phone JID so WhatsApp renders it in the self-chat
     const targetIdentityId = isSelfChat && userPhone ? `${userPhone}@s.whatsapp.net` : jid;
-    const senderName = isSelfChat ? "Merchant (Owner)" : (pushName || "Atharva Chaskar");
+    // pushName in self-chat is the owner's own WhatsApp profile name (e.g. "Omkar Rane").
+    const senderName = isSelfChat ? (pushName || "Merchant (Owner)") : (pushName || "Unknown");
     console.log(`[whatsapp inbound] Accepted message from ${senderName} (${jid} -> target: ${targetIdentityId}): "${text.trim()}"`);
 
     const receivedAt = new Date();

@@ -31,6 +31,20 @@ export class PaytmPgMock {
     );
   }
 
+  /** All transactions inside a window — used for "nearest amount" hints and
+   * the daily collection summary. Newest first. */
+  recent(windowMinutes: number, now: Date = new Date()): MockTxn[] {
+    const windowMs = windowMinutes * 60_000;
+    return this.txns
+      .filter((t) => now.getTime() - t.timestamp.getTime() <= windowMs)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+  }
+
+  /** Everything the mock knows about (no window) — the day-close summary. */
+  all(): MockTxn[] {
+    return this.txns.slice().sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+  }
+
   markSoundboxAnnounced(txnId: string): void {
     const txn = this.txns.find((t) => t.txn_id === txnId);
     if (txn) txn.soundboxAnnounced = true;

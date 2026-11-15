@@ -1,9 +1,22 @@
 import Anthropic from "@anthropic-ai/sdk";
 
+export type LlmRole = "system" | "user" | "assistant";
+
+export interface LlmMessage {
+  role: LlmRole;
+  content: string;
+}
+
 export interface LlmCompleteInput {
   system?: string;
-  prompt: string;
+  /** Single-turn shorthand. Ignored when `messages` is provided. */
+  prompt?: string;
+  /** Full multi-turn conversation — preferred for WhatsApp chat so the
+   * assistant remembers what was said earlier in the thread. */
+  messages?: LlmMessage[];
   maxTokens?: number;
+  /** 0 = deterministic routing, ~0.4 = natural conversation. */
+  temperature?: number;
 }
 
 export interface LlmCompleteOutput {
@@ -14,6 +27,27 @@ export interface LlmCompleteOutput {
 
 export interface LlmClient {
   complete(input: LlmCompleteInput): Promise<LlmCompleteOutput>;
+}
+
+/** Resolves `system` + single-turn `prompt` or a full `messages` array. */
+function buildMessages(input: LlmCompleteInput): LlmMessage[] {
+  const conversation: LlmMessage[] = input.messages?.length
+    ? [...input.messages]
+    : [{ role: "user", content: input.prompt ?? "" }];
+  return input.system ? [{ role: "system", content: input.system }, ...conversation] : conversation;
+}
+
+/** True unless the operator explicitly disabled live LLM calls (tests/offline demo). */
+export function isLlmEnabled(): boolean {
+  const provider = (process.env.LLM_PROVIDER ?? "").toLowerCase();
+  if (process.env.CORTEX_LLM_DISABLED === "1") return false;
+  if (provider === "offline" || provider === "none") return false;
+  return Boolean(
+    process.env.SARVAM_API_KEY ||
+      process.env.GEMINI_API_KEY ||
+      process.env.ANTHROPIC_API_KEY ||
+      provider === "ollama",
+  );
 }
 
 /** claude-haiku-4-5 — fast intent routing & inbound message classification (AGENTS.md §3.3). */
@@ -33,11 +67,18 @@ class AnthropicLlmClient implements LlmClient {
   ) {}
 
   async complete(input: LlmCompleteInput): Promise<LlmCompleteOutput> {
+    const messages = buildMessages(input);
+    const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n");
+    const turns = messages
+      .filter((m): m is LlmMessage & { role: "user" | "assistant" } => m.role !== "system")
+      .map((m) => ({ role: m.role, content: m.content }));
+
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: input.maxTokens ?? 1024,
-      ...(input.system ? { system: input.system } : {}),
-      messages: [{ role: "user", content: input.prompt }],
+      ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+      ...(system ? { system } : {}),
+      messages: turns.length > 0 ? turns : [{ role: "user", content: "" }],
     });
 
     const text = response.content
@@ -71,10 +112,7 @@ class SarvamLlmClient implements LlmClient {
       "https://api.sarvam.ai/v2/chat/completions",
     ];
 
-    const messages = [
-      ...(input.system ? [{ role: "system", content: input.system }] : []),
-      { role: "user", content: input.prompt },
-    ];
+    const messages = buildMessages(input);
 
     let lastError: Error | null = null;
     for (const url of endpoints) {
@@ -86,11 +124,12 @@ class SarvamLlmClient implements LlmClient {
             "Authorization": `Bearer ${this.apiKey}`,
             "api-subscription-key": this.apiKey,
           },
+          signal: AbortSignal.timeout(25_000),
           body: JSON.stringify({
             model: this.model,
             messages,
             max_tokens: input.maxTokens ?? 512,
-            temperature: 0.5,
+            temperature: input.temperature ?? 0.35,
           }),
         });
 
@@ -133,17 +172,24 @@ class GeminiLlmClient implements LlmClient {
 
   async complete(input: LlmCompleteInput): Promise<LlmCompleteOutput> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
-    const contents: any[] = [];
-    if (input.system) {
-      contents.push({ role: "user", parts: [{ text: `[System Instruction]: ${input.system}` }] });
-      contents.push({ role: "model", parts: [{ text: "Understood. I will follow these instructions." }] });
+    const contents: Array<{ role: "user" | "model"; parts: Array<{ text: string }> }> = [];
+    for (const msg of buildMessages(input)) {
+      contents.push({
+        role: msg.role === "assistant" ? "model" : "user",
+        parts: [{ text: msg.role === "system" ? `[System Instruction]: ${msg.content}` : msg.content }],
+      });
     }
-    contents.push({ role: "user", parts: [{ text: input.prompt }] });
 
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents }),
+      signal: AbortSignal.timeout(25_000),
+      body: JSON.stringify({
+        contents,
+        ...(input.temperature !== undefined
+          ? { generationConfig: { temperature: input.temperature } }
+          : {}),
+      }),
     });
 
     if (!res.ok) {
@@ -170,7 +216,10 @@ class GeminiLlmClient implements LlmClient {
  */
 class OfflineStubLlmClient implements LlmClient {
   async complete(input: LlmCompleteInput): Promise<LlmCompleteOutput> {
-    const prompt = input.prompt.toLowerCase();
+    const prompt = buildMessages(input)
+      .map((m) => m.content)
+      .join(" ")
+      .toLowerCase();
 
     let text = "";
     if (/payment|paisa|check|₹|rs|350|500/i.test(prompt)) {
@@ -207,15 +256,12 @@ class OllamaLlmClient implements LlmClient {
       const res = await fetch(`${this.baseUrl}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(20_000),
         body: JSON.stringify({
           model: this.model,
           stream: false,
-          options: { num_ctx: 4096, num_predict: input.maxTokens ?? 256 },
-          messages: [
-            ...(input.system ? [{ role: "system", content: input.system }] : []),
-            { role: "user", content: input.prompt },
-          ],
+          options: { num_ctx: 4096, num_predict: input.maxTokens ?? 256, temperature: input.temperature ?? 0.35 },
+          messages: buildMessages(input),
         }),
       });
       if (!res.ok) throw new Error(`Ollama HTTP ${res.status}: ${await res.text()}`);

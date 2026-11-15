@@ -1,4 +1,4 @@
-import type { Buffer } from "node:buffer";
+import { Buffer } from "node:buffer";
 
 export type SarvamSpeaker = "meera" | "pavithra" | "maitreyi" | "arvind" | "amartya" | "ratan";
 export type SarvamLanguage =

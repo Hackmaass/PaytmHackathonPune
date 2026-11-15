@@ -7,6 +7,7 @@ import { DECISIONS_DDL } from "./schema/decisions.js";
 import { ACTIVITY_DDL } from "./schema/activity.js";
 import { COST_EVENTS_DDL } from "./schema/cost.js";
 import { CHANNEL_BINDINGS_DDL } from "./schema/channels.js";
+import { CHAT_MESSAGES_DDL } from "./schema/chat.js";
 import { SALES_DDL, CUSTOMERS_DDL, INVENTORY_DDL } from "./schema/sales.js";
 import { SUPPLIERS_DDL, PURCHASE_ORDERS_DDL } from "./schema/procurement.js";
 import { KHATA_ENTRIES_DDL } from "./schema/khata.js";
@@ -26,6 +27,7 @@ const DDL_IN_ORDER = [
   ACTIVITY_DDL,
   COST_EVENTS_DDL,
   CHANNEL_BINDINGS_DDL,
+  CHAT_MESSAGES_DDL,
   CUSTOMERS_DDL,
   SALES_DDL,
   INVENTORY_DDL,
@@ -42,6 +44,10 @@ const DDL_IN_ORDER = [
 
 export async function runMigrations(db: CortexDb): Promise<void> {
   for (const ddl of DDL_IN_ORDER) {
-    await db.execute(sql.raw(ddl));
+    for (const statement of ddl.split(";")) {
+      const trimmed = statement.trim();
+      if (!trimmed) continue;
+      await db.execute(sql.raw(trimmed));
+    }
   }
 }

@@ -17,3 +17,6 @@ paperclip/
 # OS artifacts
 Thumbs.db
 .DS_Store
+
+# Tool artifacts
+.impeccable/

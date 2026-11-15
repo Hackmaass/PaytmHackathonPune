@@ -5,6 +5,7 @@ import { WorkforceRoster } from "../components/WorkforceRoster.js";
 import { LiveTaskStream } from "../components/LiveTaskStream.js";
 import { RemoteControlMirror } from "../components/RemoteControlMirror.js";
 import { OutcomesBar } from "../components/OutcomesBar.js";
+import { StaleNotice } from "../components/StaleNotice.js";
 import type { PendingDecision } from "../hooks/usePendingDecisions.js";
 import { usePolling } from "../hooks/usePolling.js";
 import { api } from "../api.js";
@@ -31,12 +32,13 @@ export function CommandCenterView(props: {
         onChanged={() => void props.workforce.refresh()}
       />
       <div className="command-split">
-        <LiveTaskStream events={props.events} decidedIds={decidedIds} onDecision={(id, a) => void props.onDecision(id, a)} />
+        <LiveTaskStream events={props.events} decidedIds={decidedIds} onDecision={props.onDecision} />
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <RemoteControlMirror pending={props.pending} onDecision={props.onDecision} />
           {props.workforce.data?.store.channels.whatsapp === "SIMULATOR" && <SimulatorInput onSent={() => void metrics.refresh()} />}
         </div>
       </div>
+      <StaleNotice error={metrics.error} label="outcomes" />
       <OutcomesBar metrics={metrics.data} />
     </div>
   );

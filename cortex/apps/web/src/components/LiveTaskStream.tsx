@@ -1,5 +1,8 @@
 import { useState } from "react";
-import type { ActivityEvent } from "@cortex/shared";
+import type { ActivityEvent, DecisionActionResponse, DecisionRejectResponse } from "@cortex/shared";
+import { useDecisionAction } from "../hooks/useDecisionAction.js";
+
+type DecisionResponse = DecisionActionResponse | DecisionRejectResponse | undefined;
 
 const TAG_COLOR: Record<string, string> = {
   ANOMALY_DETECTED: "amber",
@@ -14,6 +17,7 @@ const TAG_COLOR: Record<string, string> = {
   DECISION_REJECTED: "red",
   DECISION_STAGED: "purple",
   AGENT_HIRED: "purple",
+  AGENT_HANDOFF: "blue",
   SOUNDBOX_ANNOUNCED: "sky",
   COMPLIANCE_DUE: "slate",
   ATTENDANCE_SUMMARY: "slate",
@@ -33,15 +37,16 @@ const FILTERS: Array<{ id: string; label: string; match: (e: ActivityEvent) => b
 export function LiveTaskStream(props: {
   events: ActivityEvent[];
   decidedIds: Set<string | undefined>;
-  onDecision: (decisionId: string, action: "APPROVE" | "REJECT") => void;
+  onDecision: (decisionId: string, action: "APPROVE" | "REJECT") => Promise<DecisionResponse>;
 }) {
   const [filter, setFilter] = useState("all");
+  const { decide, busyId, notice } = useDecisionAction({ onDecision: props.onDecision });
   const active = FILTERS.find((f) => f.id === filter) ?? FILTERS[0]!;
   const filtered = props.events.filter(active.match);
 
   return (
     <section className="card">
-      <div className="card-title">⚡ Live Workforce Activity Stream (Task DAG)</div>
+      <div className="card-title">⚡ Live Workforce Activity</div>
       <div className="filter-chips">
         {FILTERS.map((f) => (
           <button key={f.id} className={`chip${filter === f.id ? " active" : ""}`} onClick={() => setFilter(f.id)}>
@@ -49,7 +54,14 @@ export function LiveTaskStream(props: {
           </button>
         ))}
       </div>
-      <div className="stream-list">
+      {notice && (
+        <div style={{ padding: "8px 16px" }}>
+          <div className={notice.tone === "success" ? "banner success" : "banner error"} role="status">
+            {notice.text}
+          </div>
+        </div>
+      )}
+      <div className="stream-list" aria-live="polite">
         {filtered.length === 0 && <div className="empty-state">No activity yet — trigger an agent to see the workforce in action.</div>}
         {[...filtered].reverse().map((e) => (
           <div className="stream-item" key={e.id}>
@@ -66,9 +78,10 @@ export function LiveTaskStream(props: {
                     <button
                       key={b.action}
                       className={b.action === "APPROVE" ? "approve" : "reject"}
-                      onClick={() => props.onDecision(e.decision_id!, b.action)}
+                      disabled={busyId !== undefined}
+                      onClick={() => void decide(e.decision_id!, b.action)}
                     >
-                      {b.label}
+                      {busyId === e.decision_id && b.action === "APPROVE" ? "Sending…" : b.label}
                     </button>
                   ))}
                 </div>

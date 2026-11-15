@@ -4,7 +4,9 @@ import { StoreHeader } from "./components/StoreHeader.js";
 import { SoundboxWidget } from "./components/SoundboxWidget.js";
 import { MobileBottomNav, type MobileTab } from "./components/MobileBottomNav.js";
 import { MobileCounterView } from "./components/MobileCounterView.js";
-import { MobileVoiceMic } from "./components/MobileVoiceMic.js";
+import { MobilePayCheckView } from "./components/MobilePayCheck.js";
+import { MobileAppHeader } from "./components/MobileAppHeader.js";
+import { MobileVoiceSheet } from "./components/MobileVoiceMic.js";
 import { soundboxAudio, type SoundboxAudioState } from "./services/soundboxAudio.js";
 import { useActivityStream } from "./hooks/useActivityStream.js";
 import { usePendingDecisions } from "./hooks/usePendingDecisions.js";
@@ -17,23 +19,27 @@ import { StaffView } from "./views/StaffView.js";
 import { StudioView } from "./views/StudioView.js";
 import { ChannelsView } from "./views/ChannelsView.js";
 
+const MOBILE_BREAKPOINT = 768;
+
 export default function App() {
   const [view, setView] = useState<ViewId>("command");
   const [mobileTab, setMobileTab] = useState<MobileTab>("counter");
   const [isMobile, setIsMobile] = useState<boolean>(
-    typeof window !== "undefined" ? window.innerWidth <= 768 : false,
+    typeof window !== "undefined" ? window.innerWidth <= MOBILE_BREAKPOINT : false,
   );
   const [showSoundboxModal, setShowSoundboxModal] = useState(false);
+  const [voiceOpen, setVoiceOpen] = useState(false);
   const [audioState, setAudioState] = useState<SoundboxAudioState>(soundboxAudio.getState());
 
   const { events, live, refresh: refreshStream } = useActivityStream();
   const pending = usePendingDecisions(events);
   const workforce = usePolling(api.getWorkforce, 5000);
+  const metrics = usePolling(api.getMetrics, 5000, isMobile);
 
   // Resize listener to detect mobile vs desktop
   useEffect(() => {
     function handleResize() {
-      setIsMobile(window.innerWidth <= 768);
+      setIsMobile(window.innerWidth <= MOBILE_BREAKPOINT);
     }
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
@@ -79,6 +85,12 @@ export default function App() {
     }
   }
 
+  const refreshAll = () => {
+    void refreshStream();
+    void workforce.refresh();
+    void metrics.refresh();
+  };
+
   return (
     <div className={`app-shell ${isMobile ? "is-mobile-shell" : ""}`}>
       {/* Desktop Left Nav Rail */}
@@ -86,110 +98,93 @@ export default function App() {
         <NavRail active={view} onChange={setView} badgeCounts={badgeCounts} />
       )}
 
-      <div className="app-main">
-        {/* Top Store Header */}
-        <StoreHeader
-          store={workforce.data?.store}
-          live={live}
-          onOpenSoundbox={() => {
-            if (isMobile) {
-              setMobileTab("soundbox");
-            } else {
-              setShowSoundboxModal(true);
-            }
-          }}
-        />
+      {isMobile ? (
+        <>
+          <MobileAppHeader
+            store={workforce.data?.store}
+            live={live}
+            onOpenSoundbox={() => setMobileTab("soundbox")}
+            onOpenVoice={() => setVoiceOpen(true)}
+          />
 
-        {/* Mobile View Router */}
-        {isMobile ? (
-          <div className="mobile-view-content">
+          <main className="m-scroll">
             {mobileTab === "counter" && (
               <MobileCounterView
                 workforce={workforce.data}
+                metrics={metrics.data}
+                metricsStale={metrics.error !== undefined}
                 events={events}
                 pending={pending}
                 onDecision={handleDecision}
                 onTriggerAgent={handleTriggerAgent}
-                onRefresh={() => {
-                  void refreshStream();
-                  void workforce.refresh();
-                }}
+                onOpenPayCheck={() => setMobileTab("paycheck")}
+                onOpenVoice={() => setVoiceOpen(true)}
+                onRefresh={refreshAll}
               />
             )}
-            {mobileTab === "reconcile" && (
-              <div className="mobile-tab-pane">
-                <div className="view-header">
-                  <h2>⚡ Instant Counter Payment Check</h2>
-                </div>
-                <MobileCounterView
-                  workforce={workforce.data}
-                  events={events}
-                  pending={pending}
-                  onDecision={handleDecision}
-                  onTriggerAgent={handleTriggerAgent}
-                  onRefresh={() => {
-                    void refreshStream();
-                    void workforce.refresh();
-                  }}
-                />
-              </div>
+            {mobileTab === "paycheck" && (
+              <MobilePayCheckView events={events} onRefresh={refreshAll} />
             )}
             {mobileTab === "khata" && <KhataAccountsView />}
             {mobileTab === "staff" && <StaffView pending={pending} onDecision={handleDecision} />}
             {mobileTab === "soundbox" && (
-              <div className="mobile-tab-pane">
-                <div className="view-header">
-                  <h2>🔊 Paytm Soundbox Live Controller</h2>
+              <div className="m-stack">
+                <div className="m-section__head">
+                  <h1 className="m-page-title">Soundbox</h1>
+                  <span className="m-section__hint">live controller</span>
                 </div>
                 <SoundboxWidget />
               </div>
             )}
-          </div>
-        ) : (
-          /* Desktop Views */
-          <>
-            {view === "command" && (
-              <CommandCenterView
-                events={events}
-                pending={pending}
-                workforce={workforce}
-                onDecision={handleDecision}
-                onGoToStudio={() => setView("studio")}
-              />
-            )}
-            {view === "khata" && <KhataAccountsView />}
-            {view === "stock" && <StockPurchaseView onDecision={handleDecision} />}
-            {view === "staff" && <StaffView pending={pending} onDecision={handleDecision} />}
-            {view === "studio" && <StudioView onHired={() => void workforce.refresh()} />}
-            {view === "channels" && <ChannelsView store={workforce.data?.store} onReset={() => void refreshStream()} />}
-          </>
-        )}
-      </div>
+          </main>
 
-      {/* Mobile Bottom Navigation */}
-      {isMobile && (
-        <MobileBottomNav
-          activeTab={mobileTab}
-          onChangeTab={setMobileTab}
-          pendingCount={pending.length}
-          soundboxSpeaking={audioState.isPlaying}
-        />
-      )}
+          <MobileBottomNav
+            activeTab={mobileTab}
+            onChangeTab={setMobileTab}
+            pendingCount={pending.length}
+            soundboxSpeaking={audioState.isPlaying}
+          />
 
-      {/* Floating Hindi Voice Mic for Merchant */}
-      <MobileVoiceMic
-        onActivityRefreshed={() => {
-          void refreshStream();
-          void workforce.refresh();
-        }}
-      />
+          <MobileVoiceSheet
+            open={voiceOpen}
+            onClose={() => setVoiceOpen(false)}
+            onActivityRefreshed={refreshAll}
+          />
+        </>
+      ) : (
+        <div className="app-main">
+          {/* Top Store Header */}
+          <StoreHeader
+            store={workforce.data?.store}
+            live={live}
+            onOpenSoundbox={() => setShowSoundboxModal(true)}
+          />
 
-      {/* Desktop Soundbox Modal */}
-      {!isMobile && showSoundboxModal && (
-        <div className="modal-backdrop" onClick={() => setShowSoundboxModal(false)}>
-          <div className="modal-dialog-soundbox" onClick={(e) => e.stopPropagation()}>
-            <SoundboxWidget onClose={() => setShowSoundboxModal(false)} />
-          </div>
+          {view === "command" && (
+            <CommandCenterView
+              events={events}
+              pending={pending}
+              workforce={workforce}
+              onDecision={handleDecision}
+              onGoToStudio={() => setView("studio")}
+            />
+          )}
+          {view === "khata" && <KhataAccountsView />}
+          {view === "stock" && <StockPurchaseView onDecision={handleDecision} />}
+          {view === "staff" && <StaffView pending={pending} onDecision={handleDecision} />}
+          {view === "studio" && <StudioView onHired={() => void workforce.refresh()} />}
+          {view === "channels" && (
+            <ChannelsView store={workforce.data?.store} onReset={() => void refreshStream()} />
+          )}
+
+          {/* Desktop Soundbox Modal */}
+          {showSoundboxModal && (
+            <div className="modal-backdrop" onClick={() => setShowSoundboxModal(false)}>
+              <div className="modal-dialog-soundbox" onClick={(e) => e.stopPropagation()}>
+                <SoundboxWidget onClose={() => setShowSoundboxModal(false)} />
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

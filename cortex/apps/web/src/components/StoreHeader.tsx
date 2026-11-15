@@ -5,6 +5,7 @@ import { soundboxAudio, type SoundboxAudioState } from "../services/soundboxAudi
 export function StoreHeader(props: {
   store?: Store;
   live: boolean;
+  stale?: boolean;
   onOpenSoundbox?: () => void;
 }) {
   const { store } = props;
@@ -17,7 +18,7 @@ export function StoreHeader(props: {
   return (
     <header className="store-header">
       <div className="store-header__left">
-        <div className="store-header__badge">cortex</div>
+        <div className="store-header__badge">paytm</div>
         <div className="store-header__name">{store?.name ?? "Loading store…"}</div>
         {store && <div className="store-header__gstin">GSTIN: {store.gstin}</div>}
       </div>
@@ -53,6 +54,11 @@ export function StoreHeader(props: {
           <span className={`status-dot${props.live ? "" : " simulator"}`} />
           {props.live ? "Live" : "Polling"}
         </span>
+        {props.stale && (
+          <span className="pill red" title="The last refresh failed — data may be out of date">
+            Data paused
+          </span>
+        )}
       </div>
     </header>
   );

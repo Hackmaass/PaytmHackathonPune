@@ -24,22 +24,54 @@ const AGENT_NAME = "Priya";
 const AGENT_AVATAR = "🎯";
 const DIP_HOURS_UTC = [18, 19, 20];
 
+interface HourSlice {
+  hourIst: number;
+  yesterday: number;
+  baseline: number;
+  pctChange: number;
+}
+
 interface DipStats {
   yesterdayTotal: number;
   baselineAvg: number;
   deficit: number;
   pctChange: number;
   yesterdayDateKey: string | undefined;
+  /** Worst single hour — "the dip started here", not just the whole block. */
+  worstHour: HourSlice | undefined;
+  /** Average bill value, so a revenue gap can be said in orders lost. */
+  avgTicket: number;
+  lostOrders: number;
 }
 
+function hourLabel(hour24: number): string {
+  const suffix = hour24 >= 12 ? "PM" : "AM";
+  const twelve = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${twelve} ${suffix}`;
+}
+
+/**
+ * Dip detection with a per-hour curve, not a single nightly number. The
+ * merchant's real questions are "when did it start?" and "how many orders
+ * did I lose?" — so the routine reports the worst hour and converts the
+ * rupee gap into orders at the store's average bill value.
+ */
 async function computeDipStats(db: CortexDb, storeId: string): Promise<DipStats> {
   const rows = await db.select().from(schema.sales).where(eq(schema.sales.storeId, storeId));
-  const byDate = new Map<string, number>();
+
+  const byDate = new Map<string, number>(); // window total per day
+  const byDateHour = new Map<string, number>(); // `${date}:${hour}`
+  let allQty = 0;
+  let allAmount = 0;
 
   for (const r of rows) {
+    allQty += r.qty;
+    allAmount += r.amount;
     if (!DIP_HOURS_UTC.includes(r.hourBucket.getUTCHours())) continue;
     const dateKey = r.hourBucket.toISOString().slice(0, 10);
     byDate.set(dateKey, (byDate.get(dateKey) ?? 0) + r.amount);
+    const hourKey = `${dateKey}:${r.hourBucket.getUTCHours()}`;
+    byDateHour.set(hourKey, (byDateHour.get(hourKey) ?? 0) + r.amount);
   }
 
   const dates = [...byDate.keys()].sort();
@@ -53,7 +85,21 @@ async function computeDipStats(db: CortexDb, storeId: string): Promise<DipStats>
   const deficit = Math.max(0, Math.round(baselineAvg - yesterdayTotal));
   const pctChange = baselineAvg > 0 ? ((yesterdayTotal - baselineAvg) / baselineAvg) * 100 : 0;
 
-  return { yesterdayTotal, baselineAvg, deficit, pctChange, yesterdayDateKey };
+  // Per-hour baseline curve (dip window only).
+  const hourly: HourSlice[] = [];
+  for (const hour of DIP_HOURS_UTC) {
+    const yTotal = yesterdayDateKey ? (byDateHour.get(`${yesterdayDateKey}:${hour}`) ?? 0) : 0;
+    const bTotal = baselineDates.length
+      ? baselineDates.reduce((sum, d) => sum + (byDateHour.get(`${d}:${hour}`) ?? 0), 0) / baselineDates.length
+      : 0;
+    hourly.push({ hourIst: hour, yesterday: yTotal, baseline: bTotal, pctChange: bTotal > 0 ? ((yTotal - bTotal) / bTotal) * 100 : 0 });
+  }
+  const worstHour = hourly.slice().sort((a, b) => a.pctChange - b.pctChange)[0];
+
+  const avgTicket = allQty > 0 ? allAmount / allQty : 0;
+  const lostOrders = avgTicket > 0 ? Math.round(deficit / avgTicket) : 0;
+
+  return { yesterdayTotal, baselineAvg, deficit, pctChange, yesterdayDateKey, worstHour, avgTicket, lostOrders };
 }
 
 /** Kicks off the 07:00 dip-scan routine. Returns immediately with a run id
@@ -80,7 +126,9 @@ async function executeDipScan(db: CortexDb, storeId: string, runId: string, task
     agentId: AGENT_ID,
     agentName: AGENT_NAME,
     agentAvatar: AGENT_AVATAR,
-    message: `Detected revenue dip (${stats.pctChange.toFixed(0)}%) between 6:00–9:00 PM yesterday (Deficit: ₹${stats.deficit}).`,
+    message: `Detected revenue dip (${stats.pctChange.toFixed(0)}%) between 6:00–9:00 PM yesterday (Deficit: ₹${stats.deficit}${
+      stats.worstHour ? ` · worst hour ${hourLabel(stats.worstHour.hourIst)} at ${stats.worstHour.pctChange.toFixed(0)}%` : ""
+    } · ≈${stats.lostOrders} orders lost).`,
     type: "ANOMALY_DETECTED",
     severity: "WARNING",
   });
@@ -106,7 +154,9 @@ async function executeDipScan(db: CortexDb, storeId: string, runId: string, task
       agentId: "vikram-procurement",
       agentName: "Vikram",
       agentAvatar: "📦",
-      message: `Traced root cause to ${oosSku.sku} out-of-stock at ${stockoutTime}. Stock replenished this morning.`,
+      message: `Traced root cause to ${oosSku.sku} out-of-stock at ${stockoutTime}. Stock replenished this morning${
+        stats.lostOrders > 0 ? ` — ≈${stats.lostOrders} ${oosSku.sku} orders walked away in that window` : ""
+      }.`,
       type: "ROOT_CAUSE_ISOLATED",
       severity: "INFO",
     });
@@ -126,7 +176,7 @@ async function executeDipScan(db: CortexDb, storeId: string, runId: string, task
     agentId: AGENT_ID,
     agentName: AGENT_NAME,
     agentAvatar: AGENT_AVATAR,
-    message: `Identified ${cohort.length} repeat regular customers who left without buying.`,
+    message: `Identified ${cohort.length} repeat regular customers who left without buying (avg bill ₹${Math.round(stats.avgTicket)}).`,
     type: "COHORT_BUILT",
     severity: "INFO",
   });
@@ -143,13 +193,15 @@ async function executeDipScan(db: CortexDb, storeId: string, runId: string, task
   ]);
 
   const guardrailTaskId = await addSubTask(db, { storeId, agentId: AGENT_ID, runId, parentTaskId: taskId, label: "Guardrail evaluation" });
+  const projectedRevenue = Math.round(stats.deficit * POLICY.DIP_RECOVERY_FACTOR);
+  const paybackX = cost > 0 ? (projectedRevenue / cost).toFixed(1) : "∞";
   await appendActivityEvent(db, {
     storeId,
     agentId: AGENT_ID,
     agentName: "Guardrail",
     agentAvatar: "🛡️",
     message: combined.passed
-      ? `Margin Check: ${combined.summary}. Guardrail PASSED.`
+      ? `Margin Check: ${combined.summary}. Campaign ₹${cost} vs ₹${projectedRevenue} projected recovery (${paybackX}× payback). Guardrail PASSED.`
       : `Margin Check: ${combined.summary}`,
     type: combined.passed ? "GUARDRAIL_PASSED" : "GUARDRAIL_BLOCKED",
     severity: combined.passed ? "SUCCESS" : "CRITICAL",
@@ -161,7 +213,6 @@ async function executeDipScan(db: CortexDb, storeId: string, runId: string, task
     return;
   }
 
-  const projectedRevenue = Math.round(stats.deficit * POLICY.DIP_RECOVERY_FACTOR);
   const couponCodes = cohort.map((c) => ({ customerId: c.id, code: generateCouponCode("CMP") }));
 
   await stageDecision(db, {
@@ -177,7 +228,7 @@ async function executeDipScan(db: CortexDb, storeId: string, runId: string, task
       costRupees: cost,
       projectedRevenue,
     },
-    message: `Sent WhatsApp 1-Tap Interactive Card to Ramesh Ji. 10% Recovery Voucher for ${cohort.length} regulars (Cost: ₹${cost}, Projected: ₹${projectedRevenue}).`,
+    message: `Sent WhatsApp 1-Tap Interactive Card to Ramesh Ji. 10% Recovery Voucher for ${cohort.length} regulars — valid 48h (Cost: ₹${cost}, Projected: ₹${projectedRevenue}, ${paybackX}× payback).`,
     idempotencyKey: `voucher:${storeId}:${stats.yesterdayDateKey}`,
   });
 

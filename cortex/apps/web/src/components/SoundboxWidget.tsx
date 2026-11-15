@@ -56,7 +56,7 @@ export function SoundboxWidget(props: {
           <span className="telemetry-item">📶 4G LTE</span>
           <span className="telemetry-item">🔋 88%</span>
           {props.onClose && (
-            <button className="soundbox-close-btn" onClick={props.onClose}>
+            <button className="soundbox-close-btn" onClick={props.onClose} aria-label="Close Soundbox controller">
               ✕
             </button>
           )}
@@ -129,6 +129,7 @@ export function SoundboxWidget(props: {
             step="0.05"
             value={volume}
             onChange={(e) => soundboxAudio.setVolume(Number(e.target.value))}
+            aria-label="Soundbox volume"
           />
           <span className="vol-percent">{Math.round(volume * 100)}%</span>
         </div>

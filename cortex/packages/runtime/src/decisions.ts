@@ -64,6 +64,7 @@ const DEFAULT_APPROVE_LABEL: Record<DecisionKind, string> = {
   KHATA_REMINDER_BATCH: "Send Reminders",
   PURCHASE_ORDER: "Place Order",
   PAYROLL_PAYOUT: "Pay All",
+  CUSTOM_AGENT_ACTION: "Approve & Run",
 };
 
 export interface StageDecisionInput {

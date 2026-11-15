@@ -38,6 +38,20 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return json as T;
 }
 
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => undefined);
+  if (!res.ok) {
+    const err = new Error((json as { error?: string })?.error ?? `PATCH ${path} failed: ${res.status}`);
+    (err as Error & { status?: number }).status = res.status;
+    throw err;
+  }
+  return json as T;
+}
 export const api = {
   base: BASE,
   getWorkforce: () => get<WorkforceResponse>("/api/cortex/workforce"),
@@ -60,9 +74,31 @@ export const api = {
     post<{ success: true }>("/api/cortex/staff/attendance", { worker_id: workerId, type, source: "DESKTOP" }),
 
   getStudioTemplates: () => get<StudioTemplate[]>("/api/cortex/custom-agents/templates"),
+  listCustomAgents: () => get<Array<{ id: string; status: string; spec: CustomAgentSpec }>>("/api/cortex/custom-agents"),
+  getCustomAgent: (agentId: string) => get<CustomAgentSpec>(`/api/cortex/custom-agents/${agentId}`),
+  compileCustomAgent: (body: {
+    prompt?: string;
+    template_id?: string | null;
+    flow?: unknown;
+    name?: string;
+    avatar?: string;
+    role?: string;
+    trigger?: string;
+  }) => post<CustomAgentSpec>("/api/cortex/custom-agents/compile", body),
   generateCustomAgent: (prompt: string, templateId: string | null) =>
     post<CustomAgentSpec>("/api/cortex/custom-agents/generate", { prompt, template_id: templateId }),
+  updateCustomAgent: (agentId: string, body: unknown) =>
+    patch<CustomAgentSpec>(`/api/cortex/custom-agents/${agentId}`, body),
   hireCustomAgent: (agentId: string) => post<CustomAgentSpec>(`/api/cortex/custom-agents/${agentId}/hire`, {}),
+  testCustomAgent: (body: unknown) =>
+    post<{
+      success: boolean;
+      agent_id: string;
+      steps: Array<{ node_id: string; kind: string; label: string; status: string; detail: string; row_count?: number }>;
+      messages: Array<{ to_label: string; to: string; text: string }>;
+      needs_approval: boolean;
+      headline: string;
+    }>("/api/cortex/custom-agents/test", body),
 
   sendSimulatorInbound: (body: {
     channel: "WHATSAPP" | "TELEGRAM";

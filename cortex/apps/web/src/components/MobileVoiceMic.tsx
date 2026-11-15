@@ -1,284 +1,298 @@
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { soundboxAudio } from "../services/soundboxAudio.js";
 import { api } from "../api.js";
+import { IconClose, IconMic } from "./icons.js";
 
-// Web Speech API interface declarations for TypeScript
-interface IWindow extends Window {
-  webkitSpeechRecognition?: any;
-  SpeechRecognition?: any;
+interface SpeechShim extends Window {
+  webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  SpeechRecognition?: new () => SpeechRecognitionLike;
 }
 
-export function MobileVoiceMic(props: {
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: (() => void) | null;
+  onresult: ((event: SpeechResultEvent) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort?: () => void;
+}
+
+interface SpeechResultEvent {
+  resultIndex: number;
+  results: ArrayLike<ArrayLike<{ transcript: string }>>;
+}
+
+const AGENT_AVATAR: Record<string, string> = {
+  "aman-support": "🛡️",
+  "munim-accounts": "📒",
+  "priya-sales": "🎯",
+  "vikram-procurement": "📦",
+  "meera-staff": "👷",
+};
+
+const QUICK_PROMPTS = [
+  { label: "Check ₹350", text: "Check ₹350 payment" },
+  { label: "Munim, kitna udhaar baaki hai?", text: "Munim, kitna udhaar baaki hai?" },
+  { label: "Staff attendance", text: "Staff attendance summary dikhao" },
+  { label: "Priya sales report", text: "Priya sales report aur winback offer" },
+  { label: "Vikram paneer stock", text: "Vikram paneer stock order" },
+];
+
+/**
+ * Hindi/Hinglish voice remote as a proper bottom sheet: dialog semantics,
+ * Escape to dismiss, focus moved to the field on open, recognition stopped on
+ * close (the old floating sheet kept the microphone live after dismissal).
+ */
+export function MobileVoiceSheet(props: {
+  open: boolean;
+  onClose: () => void;
   onActivityRefreshed?: () => void;
 }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [isListening, setIsListening] = useState(false);
+  const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState("");
-  const [isThinking, setIsThinking] = useState(false);
-  const [lastResponse, setLastResponse] = useState<{
-    agent: string;
-    avatar: string;
-    text: string;
-  } | null>(null);
+  const [thinking, setThinking] = useState(false);
+  const [reply, setReply] = useState<{ agent: string; avatar: string; text: string } | null>(null);
 
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const sheetRef = useRef<HTMLDivElement | null>(null);
+  const openerRef = useRef<Element | null>(null);
 
+  // One recognition instance for the life of the sheet.
   useEffect(() => {
-    const win = window as unknown as IWindow;
-    const SpeechClass = win.SpeechRecognition || win.webkitSpeechRecognition;
-    if (SpeechClass) {
-      const recognition = new SpeechClass();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.lang = "hi-IN"; // Hindi / Hinglish primary
-
-      recognition.onstart = () => {
-        setIsListening(true);
-      };
-
-      recognition.onresult = (event: any) => {
-        let current = "";
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          current += event.results[i][0].transcript;
-        }
-        setTranscript(current);
-      };
-
-      recognition.onerror = (err: any) => {
-        console.warn("[voiceMic] speech recognition error:", err);
-        setIsListening(false);
-      };
-
-      recognition.onend = () => {
-        setIsListening(false);
-      };
-
-      recognitionRef.current = recognition;
-    }
+    const win = window as unknown as SpeechShim;
+    const Ctor = win.SpeechRecognition ?? win.webkitSpeechRecognition;
+    if (!Ctor) return;
+    const recognition = new Ctor();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = "hi-IN";
+    recognition.onstart = () => setListening(true);
+    recognition.onresult = (event) => {
+      let text = "";
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const alt = event.results[i]?.[0];
+        if (alt) text += alt.transcript;
+      }
+      setTranscript(text);
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+    recognitionRef.current = recognition;
+    return () => {
+      recognition.abort?.();
+      recognitionRef.current = null;
+    };
   }, []);
 
-  function startListening() {
-    // Unlock audio context first
-    void soundboxAudio.unlock();
-    setTranscript("");
-    setLastResponse(null);
-    setIsOpen(true);
+  // Open: remember the trigger, focus the field, lock background scroll.
+  useEffect(() => {
+    if (!props.open) return;
+    openerRef.current = document.activeElement;
+    setReply(null);
+    const t = window.setTimeout(() => inputRef.current?.focus(), 60);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.clearTimeout(t);
+      document.body.style.overflow = prevOverflow;
+      if (openerRef.current instanceof HTMLElement) openerRef.current.focus();
+    };
+  }, [props.open]);
 
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.start();
-      } catch {
-        // Already started or busy
-      }
-    }
-  }
-
-  function stopListening() {
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch {}
-    }
-    setIsListening(false);
-    if (transcript.trim()) {
-      void executeQuery(transcript.trim());
-    }
-  }
-
-  async function executeQuery(text: string) {
-    if (!text.trim()) return;
-    setIsThinking(true);
-    setLastResponse(null);
-
+  // Close: stop the microphone immediately. A live mic behind a closed sheet is
+  // a privacy incident, not a visual bug.
+  useEffect(() => {
+    if (props.open) return;
+    setListening(false);
     try {
-      // 1. Dispatch text to Cortex Central Orchestrator
-      const BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3200";
-      const res = await fetch(`${BASE}/api/cortex/voice-query`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
+      recognitionRef.current?.stop();
+    } catch {
+      /* not started */
+    }
+  }, [props.open]);
 
-      if (res.ok) {
-        const data = (await res.json()) as {
-          reply_text?: string;
-          routed_to?: string;
-        };
-
-        const reply = data.reply_text || `Aapka request process ho gaya: "${text}"`;
-        const agentName = data.routed_to || "Cortex Assistant";
-        const avatar =
-          agentName.includes("aman") ? "🛡️" :
-          agentName.includes("munim") ? "📒" :
-          agentName.includes("priya") ? "🎯" :
-          agentName.includes("vikram") ? "📦" :
-          agentName.includes("meera") ? "👷" : "🤖";
-
-        setLastResponse({
-          agent: agentName,
-          avatar,
-          text: reply,
-        });
-
-        // 2. Play soundbox chime and speak reply aloud
-        await soundboxAudio.playPaytmChime();
-        await soundboxAudio.speakText(reply);
-      } else {
-        // Fallback via simulator endpoint
-        await api.sendSimulatorInbound({
-          channel: "WHATSAPP",
-          role: "OWNER",
-          identity_id: "owner-mic",
-          text,
-        });
-        setLastResponse({
-          agent: "Aman / Cortex Assistant",
-          avatar: "🛡️",
-          text: `Command sent: "${text}". Checked counter records.`,
-        });
+  // Escape dismisses; Tab stays inside the sheet.
+  useEffect(() => {
+    if (!props.open) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        props.onClose();
+        return;
       }
+      if (event.key !== "Tab" || !sheetRef.current) return;
+      const focusables = sheetRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      );
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [props.open, props.onClose]);
+
+  if (!props.open) return null;
+
+  function toggleMic() {
+    void soundboxAudio.unlock();
+    if (listening) {
+      try {
+        recognitionRef.current?.stop();
+      } catch {
+        /* already stopped */
+      }
+      setListening(false);
+      return;
+    }
+    setTranscript("");
+    setReply(null);
+    try {
+      recognitionRef.current?.start();
+    } catch {
+      /* busy — the sheet still accepts typed input */
+    }
+  }
+
+  async function ask(text: string): Promise<void> {
+    const query = text.trim();
+    if (!query || thinking) return;
+    setThinking(true);
+    setReply(null);
+    try {
+      const res = await api.sendVoiceQuery(query);
+      const agent = res.routed_to ?? "assistant";
+      const message =
+        res.reply_text || `Request "${query}" bhej diya — the team is on it. Check the live feed above.`;
+      setReply({ agent, avatar: AGENT_AVATAR[agent] ?? "🤖", text: message });
       props.onActivityRefreshed?.();
     } catch (err) {
-      setLastResponse({
-        agent: "Cortex Assistant",
+      setReply({
+        agent: "offline",
         avatar: "⚠️",
-        text: `Error processing query: ${(err as Error).message}`,
+        text: `The counter service is unreachable: ${(err as Error).message}`,
       });
     } finally {
-      setIsThinking(false);
+      setThinking(false);
     }
   }
 
   return (
-    <>
-      {/* Floating Action Button (Always reachable by thumb) */}
-      <button
-        className={`floating-voice-fab ${isListening ? "listening" : ""}`}
-        onClick={() => {
-          if (isListening) stopListening();
-          else startListening();
-        }}
-        title="Tap to speak in Hindi or English (Cortex Voice Assistant)"
+    <div className="m-sheet-backdrop" onClick={props.onClose}>
+      <div
+        ref={sheetRef}
+        className="m-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="m-voice-title"
+        onClick={(e) => e.stopPropagation()}
       >
-        <span className="fab-mic-icon">🎙️</span>
-        <span className="fab-pulse-ring" />
-      </button>
+        <div className="m-sheet__grabber" aria-hidden="true" />
+        <div className="m-sheet__head">
+          <div>
+            <h2 className="m-sheet__title" id="m-voice-title">
+              Bol ke batao
+            </h2>
+            <p className="m-sheet__sub" lang="hi">
+              हिंदी या English — अपने team से बोलिए
+            </p>
+          </div>
+          <button type="button" className="m-icon-btn m-icon-btn--light" onClick={props.onClose} aria-label="Close voice assistant">
+            <IconClose />
+          </button>
+        </div>
 
-      {/* Voice Assistant Modal / Bottom Sheet */}
-      {isOpen && (
-        <div className="voice-modal-backdrop" onClick={() => setIsOpen(false)}>
-          <div className="voice-modal-sheet" onClick={(e) => e.stopPropagation()}>
-            <div className="voice-sheet-header">
-              <div className="voice-sheet-title">
-                <span className="voice-indicator-dot" />
-                <span>Cortex Hindi Voice Remote</span>
-              </div>
-              <button className="voice-sheet-close" onClick={() => setIsOpen(false)}>
-                ✕
-              </button>
+        <div className="m-sheet__mic">
+          <button
+            type="button"
+            className={`m-mic ${listening ? "is-listening" : ""}`}
+            onClick={toggleMic}
+            aria-pressed={listening}
+            aria-label={listening ? "Stop listening" : "Start listening"}
+          >
+            <IconMic size={26} />
+          </button>
+          <p className="m-mic__state" aria-live="polite">
+            {thinking
+              ? "Soch rahe hain…"
+              : listening
+                ? "Sun rahe hain — boliye"
+                : "Tap the mic, or type below"}
+          </p>
+        </div>
+
+        <form
+          className="m-sheet__input"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void ask(transcript);
+          }}
+        >
+          <label className="sr-only" htmlFor="m-voice-input">
+            Ask your AI team
+          </label>
+          <input
+            id="m-voice-input"
+            ref={inputRef}
+            className="m-input"
+            placeholder="Check ₹350 · kitna udhaar baaki hai?"
+            value={transcript}
+            onChange={(e) => setTranscript(e.target.value)}
+            autoComplete="off"
+          />
+          <button type="submit" className="m-btn m-btn--primary" disabled={thinking || !transcript.trim()}>
+            {thinking ? "…" : "Ask"}
+          </button>
+        </form>
+
+        {reply && (
+          <div className="m-reply" role="status">
+            <div className="m-reply__head">
+              <span aria-hidden="true">{reply.avatar}</span>
+              <span>{reply.agent}</span>
             </div>
+            <p className="m-reply__body">{reply.text}</p>
+            <button
+              type="button"
+              className="m-btn m-btn--ghost m-btn--sm"
+              onClick={() => void soundboxAudio.speakText(reply.text)}
+            >
+              🔊 Play on Soundbox
+            </button>
+          </div>
+        )}
 
-            {/* Listening Visualizer */}
-            <div className="voice-visualizer-area">
-              <div className={`voice-ripple-circle ${isListening ? "active" : ""}`}>
-                <span className="mic-large-icon">{isListening ? "🔴" : "🎙️"}</span>
-              </div>
-              <div className="voice-status-text">
-                {isThinking ? "Thinking… (विचार कर रहे हैं)" :
-                 isListening ? "Listening… बोलिए (Speak now)" :
-                 "Tap mic to speak or choose a quick prompt"}
-              </div>
-            </div>
-
-            {/* Realtime Live Transcript */}
-            <div className="voice-transcript-box">
-              <input
-                className="voice-transcript-input"
-                placeholder="बोलिए ya type karein (e.g. Check ₹350, Udhaar report)..."
-                value={transcript}
-                onChange={(e) => setTranscript(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void executeQuery(transcript)}
-              />
+        <div className="m-sheet__prompts">
+          <p className="m-eyebrow">Quick asks</p>
+          <div className="m-chips">
+            {QUICK_PROMPTS.map((p) => (
               <button
-                className="btn btn-sm primary"
-                onClick={() => void executeQuery(transcript)}
-                disabled={!transcript.trim() || isThinking}
+                key={p.label}
+                type="button"
+                className="m-quick m-quick--chip"
+                onClick={() => {
+                  setTranscript(p.text);
+                  void ask(p.text);
+                }}
               >
-                Send
+                {p.label}
               </button>
-            </div>
-
-            {/* Response Card */}
-            {lastResponse && (
-              <div className="voice-response-card">
-                <div className="response-agent-header">
-                  <span className="agent-avatar">{lastResponse.avatar}</span>
-                  <span className="agent-name">{lastResponse.agent}</span>
-                </div>
-                <div className="response-body">{lastResponse.text}</div>
-                <button
-                  className="btn-replay-voice"
-                  onClick={() => void soundboxAudio.speakText(lastResponse.text)}
-                >
-                  🔊 Replay on Soundbox
-                </button>
-              </div>
-            )}
-
-            {/* Quick 1-Tap Bharat Prompts */}
-            <div className="voice-quick-chips">
-              <div className="chips-label">Quick Voice Queries:</div>
-              <div className="chips-list">
-                <button
-                  className="voice-chip"
-                  onClick={() => {
-                    setTranscript("Check ₹350 payment");
-                    void executeQuery("Check ₹350 payment");
-                  }}
-                >
-                  🛡️ "Check ₹350"
-                </button>
-                <button
-                  className="voice-chip"
-                  onClick={() => {
-                    setTranscript("Munim, kitna udhaar baaki hai?");
-                    void executeQuery("Munim, kitna udhaar baaki hai?");
-                  }}
-                >
-                  📒 "Munim, kitna udhaar baaki hai?"
-                </button>
-                <button
-                  className="voice-chip"
-                  onClick={() => {
-                    setTranscript("Staff attendance summary dikhao");
-                    void executeQuery("Staff attendance summary dikhao");
-                  }}
-                >
-                  👷 "Staff attendance summary"
-                </button>
-                <button
-                  className="voice-chip"
-                  onClick={() => {
-                    setTranscript("Priya sales report aur winback offer");
-                    void executeQuery("Priya sales report aur winback offer");
-                  }}
-                >
-                  🎯 "Priya sales report"
-                </button>
-                <button
-                  className="voice-chip"
-                  onClick={() => {
-                    setTranscript("Vikram paneer stock order");
-                    void executeQuery("Vikram paneer stock order");
-                  }}
-                >
-                  📦 "Vikram paneer stock order"
-                </button>
-              </div>
-            </div>
+            ))}
           </div>
         </div>
-      )}
-    </>
+      </div>
+    </div>
   );
 }

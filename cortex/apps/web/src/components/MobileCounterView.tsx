@@ -1,244 +1,244 @@
-import { useState } from "react";
-import type { ActivityEvent, WorkforceResponse, DecisionActionResponse, DecisionRejectResponse } from "@cortex/shared";
+import type { ActivityEvent, MetricsResponse, WorkforceResponse } from "@cortex/shared";
 import type { PendingDecision } from "../hooks/usePendingDecisions.js";
-import { soundboxAudio } from "../services/soundboxAudio.js";
-import { api } from "../api.js";
+import { useDecisionAction } from "../hooks/useDecisionAction.js";
+import type { DecisionActionResponse, DecisionRejectResponse } from "@cortex/shared";
+import { IconArrowRight, IconCheck, IconMic, IconPlay } from "./icons.js";
 
 type DecisionResponse = DecisionActionResponse | DecisionRejectResponse | undefined;
 
+const KIND_LABEL: Record<PendingDecision["decision_kind"], string> = {
+  VOUCHER_CAMPAIGN: "Voucher campaign",
+  PURCHASE_ORDER: "Purchase order",
+  PAYROLL_PAYOUT: "Payroll payout",
+  KHATA_REMINDER_BATCH: "Udhaar reminders",
+  CUSTOM_AGENT_ACTION: "Custom agent",
+};
+
+const rupees = (value: number) => `₹${value.toLocaleString("en-IN")}`;
+
+/**
+ * Mobile counter — the merchant's home screen.
+ * Order is deliberate: money that needs a decision first, then today's numbers,
+ * then the workforce and the live feed. Nothing here is a placeholder: every
+ * figure comes from /api/cortex/metrics, and every approval is a signed decision
+ * contract (AGENTS.md §5.3).
+ */
 export function MobileCounterView(props: {
   workforce?: WorkforceResponse;
+  metrics?: MetricsResponse;
+  metricsStale?: boolean;
   events: ActivityEvent[];
   pending: PendingDecision[];
   onDecision: (decisionId: string, action: "APPROVE" | "REJECT") => Promise<DecisionResponse>;
   onTriggerAgent: (agentId: string) => Promise<void>;
+  onOpenPayCheck: () => void;
+  onOpenVoice: () => void;
   onRefresh: () => void;
 }) {
-  const [customAmount, setCustomAmount] = useState("");
-  const [verifying, setVerifying] = useState(false);
-  const [verificationResult, setVerificationResult] = useState<{
-    status: "SUCCESS" | "PENDING" | "ERROR";
-    message: string;
-    amount: number;
-    utr?: string;
-  } | null>(null);
+  const { decide, busyId, notice } = useDecisionAction({
+    onDecision: props.onDecision,
+    onSettled: props.onRefresh,
+  });
 
-  const quickAmounts = [100, 200, 350, 500, 1000];
-
-  async function handleVerifyPayment(amount: number) {
-    if (!amount || amount <= 0) return;
-    setVerifying(true);
-    setVerificationResult(null);
-
-    // Unlock browser soundbox audio on tap
-    void soundboxAudio.unlock();
-
-    try {
-      // Send inbound payment check command to Aman
-      await api.sendSimulatorInbound({
-        channel: "WHATSAPP",
-        role: "OWNER",
-        identity_id: "owner-counter-phone",
-        text: `Check ₹${amount}`,
-      });
-
-      // Play local Soundbox chime and announcement
-      const hindiAmount =
-        amount === 350 ? "teen sau pachaas" :
-        amount === 500 ? "paanch sau" :
-        amount === 100 ? "ek sau" :
-        amount === 200 ? "do sau" :
-        amount === 1000 ? "ek hazaar" : `${amount}`;
-
-      const announcement = `Paytm par ${hindiAmount} rupaye prapt huye!`;
-      soundboxAudio.queueAnnouncement(announcement, { isEdgeOverride: true });
-
-      setVerificationResult({
-        status: "SUCCESS",
-        message: `Payment Verified! Paytm par ₹${amount} prapt huye.`,
-        amount,
-        utr: `UTR-${Math.floor(1000000000 + Math.random() * 9000000000)}`,
-      });
-
-      props.onRefresh();
-    } catch (err) {
-      setVerificationResult({
-        status: "ERROR",
-        message: `Error verifying: ${(err as Error).message}`,
-        amount,
-      });
-    } finally {
-      setVerifying(false);
-    }
-  }
+  const metrics = props.metrics;
+  const attributedPct = metrics?.ai_attributed_percentage ?? 0;
+  const agents = props.workforce?.agents ?? [];
+  const feed = props.events.slice(-6).reverse();
 
   return (
-    <div className="mobile-counter-container">
-      {/* 1. Counter Header & Store Info */}
-      <div className="mobile-counter-card">
-        <div className="counter-card-header">
-          <div>
-            <div className="store-pill">🏪 {props.workforce?.store.name ?? "Ramesh Sweets"}</div>
-            <div className="store-sub">GSTIN: {props.workforce?.store.gstin ?? "07AAAAA0000A1Z5"}</div>
-          </div>
-          <div className="soundbox-badge">
-            <span className="live-dot" />
-            <span>Soundbox Active (88%🔋)</span>
-          </div>
-        </div>
-
-        <div className="counter-metrics-grid">
-          <div className="metric-box">
-            <div className="metric-val">₹18,420</div>
-            <div className="metric-label">Today's UPI Total</div>
-          </div>
-          <div className="metric-box highlighted">
-            <div className="metric-val">₹3,850</div>
-            <div className="metric-label">AI Attributed (21%)</div>
-          </div>
-          <div className="metric-box">
-            <div className="metric-val">18</div>
-            <div className="metric-label">Disputes Cleared</div>
-          </div>
-        </div>
-      </div>
-
-      {/* 2. Fast Payment Check & Edge Override Pad */}
-      <div className="mobile-action-card">
-        <div className="action-card-title">
-          <span>⚡ Aman Instant Payment Check</span>
-          <span className="badge-pill sky">Soundbox Edge Override</span>
-        </div>
-        <p className="action-card-subtitle">
-          "₹350 kat gaya, Soundbox nahi bola?" Tap amount to reconcile with PG and announce instantly.
+    <div className="m-stack">
+      {/* 1. Today's money ------------------------------------------------ */}
+      <section className="m-card m-hero" aria-labelledby="m-hero-title">
+        <p className="m-eyebrow" id="m-hero-title">
+          Today · UPI collection
         </p>
-
-        {/* Quick Amount Chips */}
-        <div className="quick-amount-chips">
-          {quickAmounts.map((amt) => (
-            <button
-              key={amt}
-              className={`quick-amt-btn ${amt === 350 ? "hero-amt" : ""}`}
-              onClick={() => void handleVerifyPayment(amt)}
-              disabled={verifying}
-            >
-              ₹{amt}
-            </button>
-          ))}
-        </div>
-
-        {/* Custom Amount Form */}
-        <div className="custom-amt-row">
-          <input
-            type="number"
-            placeholder="Custom ₹ amount…"
-            value={customAmount}
-            onChange={(e) => setCustomAmount(e.target.value)}
-            className="custom-amt-input"
-          />
-          <button
-            className="btn primary verify-btn"
-            onClick={() => {
-              const num = Number(customAmount);
-              if (num > 0) void handleVerifyPayment(num);
-            }}
-            disabled={verifying || !customAmount}
-          >
-            {verifying ? "Checking…" : "Verify & Speak"}
-          </button>
-        </div>
-
-        {/* Verification Success Box */}
-        {verificationResult && (
-          <div className={`verification-badge ${verificationResult.status.toLowerCase()}`}>
-            <div className="v-icon">
-              {verificationResult.status === "SUCCESS" ? "✅" : "⚠️"}
-            </div>
-            <div className="v-details">
-              <div className="v-title">{verificationResult.message}</div>
-              {verificationResult.utr && (
-                <div className="v-utr">Txn: SUCCESS · {verificationResult.utr} · Soundbox Edge Override Announced</div>
-              )}
-            </div>
-          </div>
+        {metrics ? (
+          <p className="m-hero__value">{rupees(metrics.today_upi_total)}</p>
+        ) : (
+          <div className="m-skel m-skel--value" aria-label="Loading today's collection" />
         )}
-      </div>
-
-      {/* 3. Pending Decision Floating / Stack Cards */}
-      {props.pending.length > 0 && (
-        <div className="mobile-pending-section">
-          <div className="section-title">
-            <span>🔔 Pending Merchant Approvals ({props.pending.length})</span>
+        <dl className="m-hero__split">
+          <div>
+            <dt>AI-attributed</dt>
+            <dd>
+              {metrics ? rupees(metrics.ai_attributed_revenue) : "—"}
+              <span className="m-hero__pct">
+                {`${attributedPct.toFixed(1).replace(/\.0$/, "")}%`}
+              </span>
+            </dd>
           </div>
+          <div>
+            <dt>Disputes cleared</dt>
+            <dd>
+              {metrics ? metrics.disputes_resolved_count : "—"}
+              {metrics && metrics.disputes_resolved_amount > 0 && (
+                <span className="m-hero__pct">{rupees(metrics.disputes_resolved_amount)}</span>
+              )}
+            </dd>
+          </div>
+        </dl>
+        {props.metricsStale && <p className="m-note">Offline — showing the last known figures.</p>}
+      </section>
 
-          {props.pending.map((p) => (
-            <div key={p.id} className="mobile-decision-card">
-              <div className="m-dec-header">
-                <span className="m-dec-avatar">{p.agent_avatar}</span>
-                <span className="m-dec-agent">{p.agent_name}</span>
-                <span className="m-dec-tag">{p.decision_kind.replace(/_/g, " ")}</span>
-              </div>
-              <div className="m-dec-message">{p.message}</div>
-              <div className="m-dec-actions">
+      {/* 2. Approvals ---------------------------------------------------- */}
+      <section className="m-section" aria-labelledby="m-approvals-title">
+        <div className="m-section__head">
+          <h2 className="m-section__title" id="m-approvals-title">
+            Needs your approval
+          </h2>
+          {props.pending.length > 0 && <span className="m-count">{props.pending.length}</span>}
+        </div>
+
+        {notice && (
+          <p className={`m-receipt ${notice.tone === "success" ? "is-ok" : "is-bad"}`} role="status">
+            {notice.text}
+          </p>
+        )}
+
+        {props.pending.length === 0 ? (
+          <div className="m-card m-empty">
+            <span className="m-empty__icon" aria-hidden="true">
+              <IconCheck size={18} />
+            </span>
+            <div>
+              <p className="m-empty__title">All clear — nothing is waiting on you.</p>
+              <p className="m-empty__body">
+                When a voucher, purchase order or payout needs your one tap, it appears here.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <ul className="m-decisions">
+            {props.pending.map((p) => {
+              const busy = busyId === p.decision_id;
+              const approveLabel = p.buttons.find((b) => b.action === "APPROVE")?.label ?? "Approve";
+              const rejectLabel = p.buttons.find((b) => b.action === "REJECT")?.label ?? "Reject";
+              return (
+                <li key={p.decision_id} className="m-card m-decision">
+                  <div className="m-decision__head">
+                    <span className="m-decision__avatar" aria-hidden="true">
+                      {p.agent_avatar}
+                    </span>
+                    <span className="m-decision__agent">{p.agent_name}</span>
+                    <span className="m-chip">{KIND_LABEL[p.decision_kind]}</span>
+                  </div>
+                  <p className="m-decision__message">{p.message}</p>
+                  <p className="m-decision__meta">Staged {p.staged_at} · signed decision contract</p>
+                  <div className="m-decision__actions">
+                    <button
+                      type="button"
+                      className="m-btn m-btn--approve"
+                      disabled={busyId !== undefined}
+                      onClick={() => void decide(p.decision_id, "APPROVE")}
+                    >
+                      {busy ? "Approving…" : approveLabel}
+                    </button>
+                    <button
+                      type="button"
+                      className="m-btn m-btn--reject"
+                      disabled={busyId !== undefined}
+                      onClick={() => void decide(p.decision_id, "REJECT")}
+                    >
+                      {rejectLabel}
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      {/* 3. Instant payment check ---------------------------------------- */}
+      <section className="m-section">
+        <div className="m-section__head">
+          <h2 className="m-section__title">Payment check</h2>
+        </div>
+        <button type="button" className="m-card m-row-btn" onClick={props.onOpenPayCheck}>
+          <span className="m-row-btn__body">
+            <span className="m-row-btn__title">Aman checks a payment for you</span>
+            <span className="m-row-btn__sub">
+              &ldquo;₹350 kat gaya, Soundbox nahi bola?&rdquo; — reconcile with Paytm PG in seconds.
+            </span>
+          </span>
+          <IconArrowRight />
+        </button>
+        <button type="button" className="m-card m-row-btn m-row-btn--voice" onClick={props.onOpenVoice}>
+          <span className="m-row-btn__body">
+            <span className="m-row-btn__title">
+              <IconMic size={16} /> Bol ke batao
+            </span>
+            <span className="m-row-btn__sub">Hindi ya English — the team listens and answers.</span>
+          </span>
+          <IconArrowRight />
+        </button>
+      </section>
+
+      {/* 4. Workforce ---------------------------------------------------- */}
+      <section className="m-section" aria-labelledby="m-roster-title">
+        <div className="m-section__head">
+          <h2 className="m-section__title" id="m-roster-title">
+            Your workforce
+          </h2>
+          <span className="m-section__hint">{agents.length} hired</span>
+        </div>
+        {agents.length === 0 ? (
+          <div className="m-card m-empty">
+            <p className="m-empty__body">Connecting to your workforce…</p>
+          </div>
+        ) : (
+          <ul className="m-roster">
+            {agents.map((agent) => (
+              <li key={agent.id} className="m-agent">
+                <div className="m-agent__top">
+                  <span className="m-agent__avatar" aria-hidden="true">
+                    {agent.avatar}
+                  </span>
+                  <span className={`m-agent__status is-${agent.status.toLowerCase()}`}>{agent.status}</span>
+                </div>
+                <p className="m-agent__name">{agent.name}</p>
+                <p className="m-agent__role">{agent.role}</p>
+                <p className="m-agent__metric">
+                  <span>{agent.metric_label}</span>
+                  {agent.metric_value}
+                </p>
                 <button
-                  className="btn-m-approve"
-                  onClick={() => void props.onDecision(p.id, "APPROVE")}
+                  type="button"
+                  className="m-agent__run"
+                  onClick={() => void props.onTriggerAgent(agent.id)}
+                  aria-label={`Run ${agent.name} now`}
                 >
-                  ✅ 1-Tap Approve & Send
+                  <IconPlay size={14} /> Run
                 </button>
-                <button
-                  className="btn-m-reject"
-                  onClick={() => void props.onDecision(p.id, "REJECT")}
-                >
-                  ❌ Reject
-                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* 5. Live feed ---------------------------------------------------- */}
+      <section className="m-section" aria-labelledby="m-feed-title">
+        <div className="m-section__head">
+          <h2 className="m-section__title" id="m-feed-title">
+            Live feed
+          </h2>
+          <span className="m-section__hint">newest first</span>
+        </div>
+        <div className="m-card m-feed" aria-live="polite">
+          {feed.length === 0 && <p className="m-empty__body">Your team has not filed an event yet.</p>}
+          {feed.map((e) => (
+            <div key={e.id} className="m-feed__item">
+              <span className={`m-feed__dot is-${e.severity.toLowerCase()}`} aria-hidden="true" />
+              <div className="m-feed__body">
+                <p className="m-feed__msg">{e.message}</p>
+                <p className="m-feed__meta">
+                  <span aria-hidden="true">{e.agent_avatar}</span> {e.agent_name} · {e.timestamp}
+                </p>
               </div>
             </div>
           ))}
         </div>
-      )}
-
-      {/* 4. AI Workforce Roster (Horizontal Mobile Scroll) */}
-      <div className="mobile-roster-section">
-        <div className="section-title">
-          <span>👥 Your AI Workforce</span>
-        </div>
-        <div className="mobile-roster-scroll">
-          {(props.workforce?.agents ?? []).map((ag) => (
-            <div key={ag.id} className="mobile-agent-card">
-              <div className="ag-top">
-                <span className="ag-avatar">{ag.avatar}</span>
-                <span className="ag-status">{ag.status}</span>
-              </div>
-              <div className="ag-name">{ag.name}</div>
-              <div className="ag-role">{ag.role}</div>
-              <div className="ag-metric">{ag.metric_label}: {ag.metric_value}</div>
-              <button
-                className="ag-run-btn"
-                onClick={() => void props.onTriggerAgent(ag.id)}
-              >
-                ▶ Run Now
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* 5. Live Activity Feed Mini */}
-      <div className="mobile-feed-section">
-        <div className="section-title">
-          <span>⚡ Live Workforce Feed</span>
-        </div>
-        <div className="mobile-feed-list">
-          {props.events.slice(-5).reverse().map((e) => (
-            <div key={e.id} className="mobile-feed-item">
-              <span className="f-time">{e.timestamp}</span>
-              <span className="f-avatar">{e.agent_avatar}</span>
-              <span className="f-msg">{e.message}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+      </section>
     </div>
   );
 }

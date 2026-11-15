@@ -2,12 +2,15 @@ import { z } from "zod";
 import { IdentityRoleEnum } from "./enums.js";
 
 // Body for POST /api/channels/simulator/inbound — simulates an inbound
-// WhatsApp/Telegram message or button tap from the desktop mirror.
+// WhatsApp/Telegram message, voice note, or button tap from the desktop mirror.
 export const SimulatorInboundSchema = z.object({
   channel: z.enum(["WHATSAPP", "TELEGRAM"]),
   role: IdentityRoleEnum,
   identity_id: z.string(),
   text: z.string().optional(),
+  /** For voice notes: base64-encoded audio data (optional, for demo without real audio) */
+  audio_base64: z.string().optional(),
+  audio_mime_type: z.string().optional(),
   button: z
     .object({
       decision_id: z.string(),
