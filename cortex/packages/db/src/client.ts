@@ -10,12 +10,19 @@ let pgliteSingleton: PGlite | undefined;
 
 /**
  * Creates (or returns) the process-wide PGlite-backed Drizzle client.
- * `dataDir` undefined => in-memory (fresh every process start, used by
- * seed-demo + tests); a path makes it persist across server restarts.
+ * - Production (Render): uses persistent disk at /app/cortex/data
+ * - Development: in-memory unless dataDir provided
+ * - Tests/seed: pass explicit dataDir
  */
 export async function getDb(dataDir?: string): Promise<CortexDb> {
   if (dbSingleton) return dbSingleton;
-  pgliteSingleton = dataDir ? new PGlite(dataDir) : new PGlite();
+
+  // Auto-detect Render persistent disk
+  const isProduction = process.env.NODE_ENV === 'production';
+  const renderDiskPath = '/app/cortex/data';
+  const persistDir = dataDir ?? (isProduction ? renderDiskPath : undefined);
+
+  pgliteSingleton = persistDir ? new PGlite(persistDir) : new PGlite();
   dbSingleton = drizzle(pgliteSingleton, { schema });
   await runMigrations(dbSingleton);
   return dbSingleton;
